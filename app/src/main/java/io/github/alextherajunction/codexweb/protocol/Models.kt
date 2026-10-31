@@ -13,6 +13,8 @@ data class ModelOption(
     val isDefault: Boolean,
     val reasoningEfforts: List<String>,
     val defaultReasoningEffort: String?,
+    val upstreamModelId: String = "",
+    val hidden: Boolean = false,
 ) {
     companion object {
         fun fromJson(json: JsonObject): ModelOption = ModelOption(
@@ -27,8 +29,81 @@ data class ModelOption(
                 }
                 .orEmpty(),
             defaultReasoningEffort = json.string("defaultReasoningEffort"),
+            upstreamModelId = json.string("model").orEmpty(),
+            hidden = json.boolean("hidden") == true,
         )
     }
+}
+
+data class ServerModelConfig(
+    val modelId: String = "",
+    val providerId: String = "",
+)
+
+data class ServerModelCatalog(
+    val models: List<ModelOption> = emptyList(),
+    val defaultModelId: String = "",
+)
+
+internal fun parseServerModelConfig(response: JsonElement?): ServerModelConfig {
+    val config = response?.asObjectOrNull()?.obj("config") ?: return ServerModelConfig()
+    return ServerModelConfig(
+        modelId = config.string("model")?.trim().orEmpty(),
+        providerId = config.string("model_provider")?.trim().orEmpty(),
+    )
+}
+
+internal fun resolveServerModelCatalog(
+    modelsResponse: JsonElement,
+    configResponse: JsonElement?,
+): ServerModelCatalog {
+    val catalog = modelsResponse.asObjectOrNull()
+        ?.array("data")
+        ?.mapNotNull { (it as? JsonObject)?.let(ModelOption::fromJson) }
+        ?.filter { it.id.isNotBlank() && !it.hidden }
+        .orEmpty()
+    val config = parseServerModelConfig(configResponse)
+    val configuredModel = config.modelId
+    val providerIsOpenAi = config.providerId.isBlank() || config.providerId.equals("openai", ignoreCase = true)
+
+    val models = when {
+        providerIsOpenAi -> {
+            catalog.toMutableList().apply {
+                if (configuredModel.isNotBlank() && none { it.matches(configuredModel) }) {
+                    add(0, configuredModelOption(config))
+                }
+            }
+        }
+        configuredModel.isBlank() -> emptyList()
+        else -> catalog.filter { it.matches(configuredModel) }
+            .ifEmpty { listOf(configuredModelOption(config)) }
+    }
+
+    val defaultModel = models.firstOrNull { configuredModel.isNotBlank() && it.matches(configuredModel) }
+        ?: models.firstOrNull { it.isDefault }
+        ?: models.firstOrNull()
+    return ServerModelCatalog(
+        models = models,
+        defaultModelId = defaultModel?.id.orEmpty(),
+    )
+}
+
+private fun ModelOption.matches(modelId: String): Boolean =
+    id == modelId || upstreamModelId == modelId
+
+private fun configuredModelOption(config: ServerModelConfig): ModelOption {
+    val description = config.providerId.takeIf { it.isNotBlank() }
+        ?.let { "Configured on the server ($it)" }
+        ?: "Configured on the server"
+    return ModelOption(
+        id = config.modelId,
+        displayName = config.modelId,
+        description = description,
+        isDefault = true,
+        reasoningEfforts = emptyList(),
+        defaultReasoningEffort = null,
+        upstreamModelId = config.modelId,
+    )
 }
 
 data class UsageInfo(

@@ -13,7 +13,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Native thread drawer backed by `thread/list`, `thread/read`, and `thread/resume`.
 - Streaming assistant text from `item/agentMessage/delta`.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
-- Model picker from `model/list`.
+- Model picker from the server's `model/list` catalog and `config/read` model/provider settings.
 - Server-side working-directory control.
 - Interrupt active turns through `turn/interrupt`.
 - Command, file-change, and permission approval cards using the exact app-server response schemas.
@@ -111,7 +111,7 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 
 ## Security notes
 
-- The app persists only the deployment URL and last selected model ID.
+- The app persists only the deployment URL and last selected server-provided model ID.
 - WebView cookies are managed by Android's WebView cookie store, not copied into app preferences or logs.
 - WebView file/content access is disabled and mixed content is rejected.
 - SSL certificate errors are not bypassed. Use a trusted certificate for HTTPS deployments.

@@ -91,8 +91,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateModel(modelId: String) {
+        val repository = repository ?: return
+        if (repository.state.value.models.none { it.id == modelId }) return
         preferences.lastModelId = modelId
-        repository?.selectModel(modelId)
+        repository.selectModel(modelId)
     }
 
     fun beginLogin() {

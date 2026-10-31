@@ -5,7 +5,7 @@
 - `CodexWebViewModel` owns the high-level phase: signed out, WebView authentication, connecting, ready.
 - `WebSessionGateway` validates the deployment URL, reads `/api/auth/me` and `/api/codex/bridge-url` with the WebView cookie, and resolves a same-origin bridge path to `ws`/`wss`.
 - `CodexRpcClient` owns the JSON-RPC WebSocket, request IDs, pending calls, notifications, server requests, close events, and malformed-message reporting.
-- `AppServerRepository` initializes the protocol, loads `model/list`, `account/read`, and `thread/list`, hydrates threads, starts turns, interrupts turns, and answers server requests.
+- `AppServerRepository` initializes the protocol, loads `model/list`, `config/read`, `account/read`, and `thread/list`, hydrates threads, starts turns, interrupts turns, and answers server requests.
 - `SessionReducer` is a pure notification reducer. It keeps unknown notifications as diagnostics and has no UI dependencies.
 - Compose screens consume a single `AppUiState` plus the app-server snapshot.
 
@@ -13,6 +13,7 @@
 
 - `initialize` sends `clientInfo`, `capabilities.experimentalApi=true`, then the `initialized` notification.
 - Thread discovery uses `thread/list` with `sortKey=recency_at`, `sortDirection=desc`, and `archived=false`.
+- Model options come only from app-server data: `model/list` supplies the catalog, while `config/read` supplies the configured model/provider. A non-OpenAI provider suppresses incompatible OpenAI catalog entries and the configured model is sent to thread/turn requests.
 - Opening a thread calls `thread/resume`, then `thread/read` with `includeTurns=true`.
 - Sending calls `thread/start` when there is no selected thread, then `turn/start` with a text `UserInput`.
 - Command and file-change approvals respond with `{ "decision": "accept" | "acceptForSession" | "decline" }`.
@@ -48,11 +49,12 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 
 ## Verification results (2026-10-31)
 
-- `./gradlew :app:testDebugUnitTest --no-daemon` passed all 11 unit tests.
-- `./gradlew :app:assembleRelease -PversionName=0.1.0 -PversionCode=1 --no-daemon --offline` completed successfully.
+- `./gradlew :app:testDebugUnitTest --no-daemon` passed all 16 unit tests.
+- `./gradlew :app:assembleRelease --no-daemon` completed successfully.
 - `apksigner verify --verbose --print-certs` reported a valid APK Signature Scheme v2 signature.
 - An Android 15 (API 35, x86_64) emulator installed the release APK and verified URL onboarding, WebView login, native thread rendering, streamed app-server notifications, a command approval round-trip (`{"decision":"accept"}`), and automatic reconnect after a cold app restart.
 - The emulator smoke used a local mock Codex Web bridge at `10.0.2.2:3100`, not a real user `CODEX_HOME` or the local production server.
+- A server-model smoke returned an OpenAI catalog from `model/list` plus `model=deepseek-flash` / `model_provider=deepseek` from `config/read`. The Android UI showed only `deepseek-flash`, and `turn/start` sent `"model":"deepseek-flash"`.
 - GitHub Actions run `41203481232` published release `android-v0.1.7` with `codex-web-android-0.1.7.apk` and a portable `.sha256` asset.
 - Re-download verification passed `sha256sum -c` and `apksigner verify --verbose --print-certs`; the release is signed by a self-signed 4096-bit RSA certificate.
 

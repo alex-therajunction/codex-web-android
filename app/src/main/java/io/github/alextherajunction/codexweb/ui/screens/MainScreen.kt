@@ -204,7 +204,7 @@ fun MainScreen(
                             ) {
                                 if (snapshot.models.isEmpty()) {
                                     DropdownMenuItem(
-                                        text = { Text("No models from model/list") },
+                                        text = { Text("No models from the server") },
                                         onClick = {},
                                         enabled = false,
                                     )

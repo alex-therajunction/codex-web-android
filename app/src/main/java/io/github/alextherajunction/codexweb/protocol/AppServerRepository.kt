@@ -89,12 +89,12 @@ class AppServerRepository(
         val modelsResponse = rpc.request("model/list", buildJsonObject {
             put("includeHidden", false)
         })
-        val models = modelsResponse.asObjectOrNull()
-            ?.array("data")
-            ?.mapNotNull { (it as? JsonObject)?.let(ModelOption::fromJson) }
-            ?.filter { it.id.isNotBlank() }
-            .orEmpty()
-        val defaultModel = models.firstOrNull { it.isDefault } ?: models.firstOrNull()
+        val configResponse = runCatching {
+            rpc.request("config/read", buildJsonObject {
+                put("includeLayers", false)
+            })
+        }.getOrNull()
+        val modelCatalog = resolveServerModelCatalog(modelsResponse, configResponse)
 
         val account = readAccount(rpc.request("account/read", buildJsonObject {
             put("refreshToken", false)
@@ -106,8 +106,8 @@ class AppServerRepository(
         _state.update {
             it.copy(
                 connection = "connected",
-                models = models,
-                selectedModelId = defaultModel?.id.orEmpty(),
+                models = modelCatalog.models,
+                selectedModelId = modelCatalog.defaultModelId,
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
@@ -140,6 +140,7 @@ class AppServerRepository(
     }
 
     fun selectModel(modelId: String) {
+        if (_state.value.models.none { it.id == modelId }) return
         _state.update { it.copy(selectedModelId = modelId) }
     }
 
