@@ -119,9 +119,9 @@ jobs:
           test -f "${APK}"
           "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose --print-certs "${APK}"
           mkdir -p dist
-          OUT="dist/codex-web-android-${{ steps.version.outputs.name }}.apk"
-          cp "${APK}" "${OUT}"
-          sha256sum "${OUT}" > "${OUT}.sha256"
+          OUT_NAME="codex-web-android-${{ steps.version.outputs.name }}.apk"
+          cp "${APK}" "dist/${OUT_NAME}"
+          (cd dist && sha256sum "${OUT_NAME}" > "${OUT_NAME}.sha256")
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
