@@ -64,7 +64,8 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 - Paginated-history smoke observed `thread/resume` with `excludeTurns=true`, metadata-only `thread/read`, and `thread/turns/list` with `itemsView=full`. “Load earlier messages” issued a second request with the returned cursor, prepended the older turns, and removed the control when `nextCursor` was null.
 - Command-card smoke observed `item/commandExecution/terminalInteraction` and rendered `mock terminal input` under “Terminal input” without an `unhandled:` diagnostic. The mock `deprecationNotice` appeared as `app-server.deprecationNotice` without an `unhandled:` prefix.
 - The initialization diagnostic renders `BuildConfig.VERSION_NAME`. Local builds without `-PversionName` report the default `0.1.0`; the release workflow injects the published release version.
-- The latest prior published baseline was `android-v0.1.12`. The additional fail-safe and pagination behavior in this handover requires a newer release; this document does not claim that release has been published.
+- GitHub Actions run `41247303356` published these model fail-safe, history pagination, terminal-input, and diagnostics changes as `android-v0.1.14` with `codex-web-android-0.1.14.apk` and a portable `.sha256` asset.
+- Re-download verification passed `sha256sum -c` and `apksigner verify --verbose --print-certs`. The released APK is signed by the persistent 4096-bit RSA certificate with SHA-256 fingerprint `dacd89b1d753f0a0709b7feb263dba6c2fc7cb64b409e4d8da00a8e3c11f9aac`.
 - GitHub Actions run `41203481232` published release `android-v0.1.7` with `codex-web-android-0.1.7.apk` and a portable `.sha256` asset.
 - Re-download verification passed `sha256sum -c` and `apksigner verify --verbose --print-certs`; the release is signed by a self-signed 4096-bit RSA certificate.
 
