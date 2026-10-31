@@ -68,8 +68,19 @@ jobs:
           SECRET_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           SECRET_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SECRET_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          SHOULD_RELEASE: ${{ steps.version.outputs.should_release }}
         run: |
           set -euo pipefail
+          if [[ "${SHOULD_RELEASE}" == "true" ]]; then
+            MISSING=()
+            [[ -n "${KEYSTORE_BASE64}" ]] || MISSING+=("ANDROID_KEYSTORE_BASE64")
+            [[ -n "${SECRET_STORE_PASSWORD}" ]] || MISSING+=("ANDROID_KEYSTORE_PASSWORD")
+            [[ -n "${SECRET_KEY_PASSWORD}" ]] || MISSING+=("ANDROID_KEY_PASSWORD")
+            if (( ${#MISSING[@]} )); then
+              echo "::error::Release builds require persistent signing secrets: ${MISSING[*]}" >&2
+              exit 1
+            fi
+          fi
           KEYSTORE_PATH="ci-release.jks"
           if [[ -n "${KEYSTORE_BASE64}" ]]; then
             echo "Using repository-configured signing keystore."
