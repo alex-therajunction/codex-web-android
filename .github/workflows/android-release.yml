@@ -144,7 +144,7 @@ jobs:
 
           Install it on an Android 8.0+ device after enabling installs from unknown sources. The APK is signed with a self-signed certificate and is not distributed through Google Play.
 
-          Configure `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` repository secrets to keep a stable signing key across releases."
+          Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD repository secrets to keep a stable signing key across releases."
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" dist/* --clobber
           else
