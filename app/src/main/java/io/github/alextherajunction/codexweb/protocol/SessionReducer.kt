@@ -61,6 +61,7 @@ fun AppServerSnapshot.applyNotification(notification: RpcNotification): AppServe
             "item/completed" -> upsertNotificationItem(params, completed = true)
             "item/agentMessage/delta" -> appendToItem(params, "agentMessage", "delta")
             "item/commandExecution/outputDelta" -> appendToItem(params, "commandExecution", "delta", detail = true)
+            "item/commandExecution/terminalInteraction" -> applyTerminalInteraction(params)
             "item/fileChange/outputDelta" -> appendToItem(params, "fileChange", "delta", detail = true)
             "item/reasoning/summaryTextDelta" -> appendToItem(params, "reasoning", "delta")
             "item/reasoning/textDelta" -> appendToItem(params, "reasoning", "delta")
@@ -105,6 +106,21 @@ fun AppServerSnapshot.applyNotification(notification: RpcNotification): AppServe
                     lastError = message,
                     diagnostics = appendDiagnostic(method, message),
                 )
+            }
+            "deprecationNotice" -> {
+                val summary = params.string("summary") ?: "App-server deprecation notice"
+                val details = params.string("details")
+                val diagnostic = listOf(summary, details)
+                    .filterNotNull()
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+                if (diagnostics.any { it.method == "app-server.deprecationNotice" && it.summary == diagnostic }) {
+                    copy()
+                } else {
+                    copy(
+                        diagnostics = appendDiagnostic("app-server.deprecationNotice", diagnostic),
+                    )
+                }
             }
             in knownNoOpNotifications -> copy()
             else -> diagnosed(notification)
@@ -161,7 +177,10 @@ fun AppServerSnapshot.withError(message: String?): AppServerSnapshot =
     copy(lastError = message)
 
 fun AppServerSnapshot.appendDiagnostic(method: String, summary: String): List<Diagnostic> =
-    (diagnostics + Diagnostic(method = method, summary = summary.take(1_200))).takeLast(50)
+    diagnostics.appendDiagnostic(method, summary)
+
+fun List<Diagnostic>.appendDiagnostic(method: String, summary: String): List<Diagnostic> =
+    (this + Diagnostic(method = method, summary = summary.take(1_200))).takeLast(50)
 
 private fun AppServerSnapshot.diagnosed(
     notification: RpcNotification,
@@ -244,7 +263,13 @@ private fun AppServerSnapshot.putItem(
             .also { turns.add(it) }
     }
     val turnIndex = turns.indexOfFirst { it.id == target.id }
-    val items = target.items.filterNot { it.id == item.id } + item
+    val existingItem = target.items.firstOrNull { it.id == item.id }
+    val mergedItem = if (existingItem != null && item.terminalInput.isBlank()) {
+        item.copy(terminalInput = existingItem.terminalInput)
+    } else {
+        item
+    }
+    val items = target.items.filterNot { it.id == item.id } + mergedItem
     turns[turnIndex] = target.copy(items = items)
     return copy(
         turnsByThread = turnsByThread + (threadId to turns),
@@ -289,6 +314,41 @@ private fun AppServerSnapshot.appendToItem(
     } else {
         existing.copy(text = existing.text + delta, isStreaming = true)
     }
+    val items = turn.items.filterNot { it.id == itemId } + updated
+    turns[turnIndex] = turn.copy(items = items)
+    return copy(turnsByThread = turnsByThread + (threadId to turns))
+}
+
+private fun AppServerSnapshot.applyTerminalInteraction(params: JsonObject): AppServerSnapshot {
+    val threadId = params.string("threadId") ?: return diagnosed(
+        RpcNotification("item/commandExecution/terminalInteraction", params),
+    )
+    val turnId = params.string("turnId")
+    val itemId = params.string("itemId") ?: return diagnosed(
+        RpcNotification("item/commandExecution/terminalInteraction", params),
+    )
+    val stdin = params.string("stdin").orEmpty()
+    if (stdin.isEmpty()) return this
+
+    val turns = turnsByThread[threadId].orEmpty().toMutableList()
+    val effectiveTurnId = turnId ?: turns.lastOrNull()?.id ?: "unknown"
+    var turnIndex = turns.indexOfFirst { it.id == effectiveTurnId }
+    if (turnIndex < 0) {
+        turns.add(TurnInfo(id = effectiveTurnId, status = "inProgress"))
+        turnIndex = turns.lastIndex
+    }
+    val turn = turns[turnIndex]
+    val existing = turn.items.firstOrNull { it.id == itemId } ?: ChatItem(
+        id = itemId,
+        kind = "commandExecution",
+        title = "Command",
+        status = "inProgress",
+        isStreaming = true,
+    )
+    val updated = existing.copy(
+        terminalInput = existing.terminalInput + stdin,
+        isStreaming = true,
+    )
     val items = turn.items.filterNot { it.id == itemId } + updated
     turns[turnIndex] = turn.copy(items = items)
     return copy(turnsByThread = turnsByThread + (threadId to turns))

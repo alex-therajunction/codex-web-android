@@ -61,6 +61,7 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onThreadSelected = viewModel::selectThread,
                 onNewChat = viewModel::newChat,
                 onRefreshThreads = viewModel::refreshThreads,
+                onLoadEarlierTurns = viewModel::loadEarlierTurns,
                 onModelSelected = viewModel::updateModel,
                 onComposerChange = viewModel::updateComposer,
                 onSend = viewModel::sendMessage,

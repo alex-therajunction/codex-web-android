@@ -109,6 +109,7 @@ fun MainScreen(
     onThreadSelected: (String) -> Unit,
     onNewChat: () -> Unit,
     onRefreshThreads: () -> Unit,
+    onLoadEarlierTurns: () -> Unit,
     onModelSelected: (String) -> Unit,
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -310,6 +311,8 @@ fun MainScreen(
                 Box(Modifier.weight(1f)) {
                     Conversation(
                         snapshot = snapshot,
+                        loadingEarlierTurns = state.loadingEarlierTurns,
+                        onLoadEarlierTurns = onLoadEarlierTurns,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -554,6 +557,8 @@ private fun ThreadRow(
 @Composable
 private fun Conversation(
     snapshot: AppServerSnapshot,
+    loadingEarlierTurns: Boolean,
+    onLoadEarlierTurns: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -562,10 +567,15 @@ private fun Conversation(
             turn.items.map { turn to it }
         }
     }
+    val hasEarlierTurns = snapshot.selectedThreadId?.let {
+        snapshot.earlierTurnsCursorByThread[it] != null
+    } == true
     val headerCount = (if (snapshot.selectedPlan != null) 1 else 0) +
-        (if (snapshot.selectedGoal != null) 1 else 0)
+        (if (snapshot.selectedGoal != null) 1 else 0) +
+        (if (hasEarlierTurns) 1 else 0)
     val lastTextLength = rows.lastOrNull()?.second?.let { it.text.length + it.detail.length } ?: 0
-    LaunchedEffect(rows.size, lastTextLength, snapshot.selectedActiveTurnId) {
+    val lastRowId = rows.lastOrNull()?.second?.id
+    LaunchedEffect(lastRowId, lastTextLength, snapshot.selectedActiveTurnId, snapshot.selectedThreadId) {
         if (rows.isNotEmpty()) {
             val target = (headerCount + rows.size - 1).coerceAtLeast(0)
             listState.animateScrollToItem(target)
@@ -593,6 +603,25 @@ private fun Conversation(
         }
         snapshot.selectedGoal?.let { goal ->
             item(key = "goal-summary") { GoalSummaryCard(goal) }
+        }
+        if (hasEarlierTurns) {
+            item(key = "load-earlier-turns") {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    TextButton(
+                        onClick = onLoadEarlierTurns,
+                        enabled = !loadingEarlierTurns,
+                    ) {
+                        if (loadingEarlierTurns) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text("Load earlier messages")
+                    }
+                }
+            }
         }
         items(rows, key = { (turn, item) -> "${turn.id}:${item.id}" }) { (_, item) ->
             ChatItemRow(item)

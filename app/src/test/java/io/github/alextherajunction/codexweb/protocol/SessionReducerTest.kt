@@ -58,6 +58,61 @@ class SessionReducerTest {
         assertEquals("active", state.threadStatusByThread["t1"])
     }
 
+    @Test
+    fun `terminal interaction is shown on the command item and is not a diagnostic`() {
+        var state = AppServerSnapshot(
+            turnsByThread = mapOf(
+                "t1" to listOf(
+                    TurnInfo(
+                        id = "turn1",
+                        status = "inProgress",
+                        items = listOf(
+                            ChatItem(
+                                id = "cmd1",
+                                kind = "commandExecution",
+                                title = "npm login",
+                                status = "inProgress",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        state = state.applyNotification(
+            notification(
+                "item/commandExecution/terminalInteraction",
+                """{"threadId":"t1","turnId":"turn1","itemId":"cmd1","processId":"42","stdin":"user@example.com\n"}""",
+            ),
+        )
+        state = state.applyNotification(
+            notification(
+                "item/completed",
+                """{"threadId":"t1","turnId":"turn1","item":{"type":"commandExecution","id":"cmd1","command":"npm login","status":"completed","aggregatedOutput":"logged in\n","exitCode":0}}""",
+            ),
+        )
+
+        val command = state.turnsByThread.getValue("t1").single().items.single()
+        assertEquals("user@example.com\n", command.terminalInput)
+        assertEquals("logged in\n\nexit code: 0", command.detail)
+        assertTrue(state.diagnostics.none { it.method.contains("terminalInteraction") })
+    }
+
+    @Test
+    fun `deprecation notice is preserved as a sourced diagnostic without unhandled prefix`() {
+        val state = AppServerSnapshot().applyNotification(
+            notification(
+                "deprecationNotice",
+                """{"summary":"Full-history hydration is deprecated","details":"Use thread/turns/list instead."}""",
+            ),
+        )
+
+        val diagnostic = state.diagnostics.single()
+        assertEquals("app-server.deprecationNotice", diagnostic.method)
+        assertTrue(diagnostic.summary.contains("Full-history hydration is deprecated"))
+        assertTrue(diagnostic.summary.contains("Use thread/turns/list instead."))
+        assertTrue(state.diagnostics.none { it.method.startsWith("unhandled:") })
+    }
+
     private fun notification(method: String, params: String): RpcNotification =
         RpcNotification(method, json.parseToJsonElement(params).jsonObject as JsonObject)
 }

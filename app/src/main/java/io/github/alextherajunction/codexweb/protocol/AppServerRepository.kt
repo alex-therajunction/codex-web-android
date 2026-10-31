@@ -1,8 +1,10 @@
 package io.github.alextherajunction.codexweb.protocol
 
+import io.github.alextherajunction.codexweb.BuildConfig
 import io.github.alextherajunction.codexweb.data.DeploymentSession
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -89,21 +91,28 @@ class AppServerRepository(
         val modelsResponse = rpc.request("model/list", buildJsonObject {
             put("includeHidden", false)
         })
-        val configResponse = runCatching {
-            rpc.request("config/read", buildJsonObject {
-                put("includeLayers", false)
-            })
-        }.getOrNull()
-        val modelCatalog = resolveServerModelCatalog(modelsResponse, configResponse)
-
         val account = readAccount(rpc.request("account/read", buildJsonObject {
             put("refreshToken", false)
         }))
 
         val threadsResponse = rpc.request("thread/list", threadListParams())
         val threads = parseThreads(threadsResponse)
+        val configRead = readEffectiveConfig()
+        val modelCatalog = resolveServerModelCatalog(
+            modelsResponse = modelsResponse,
+            configResponse = configRead.response,
+            fallbackConfig = serverModelConfigFromThreads(threads),
+        )
 
         _state.update {
+            val diagnostics = if (configRead.error == null) {
+                it.diagnostics
+            } else {
+                it.appendDiagnostic(
+                    "app-server.config/read",
+                    "Effective config unavailable (${configRead.error}); using thread metadata when available.",
+                )
+            }
             it.copy(
                 connection = "connected",
                 models = modelCatalog.models,
@@ -111,9 +120,9 @@ class AppServerRepository(
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
-                diagnostics = it.appendDiagnostic(
+                diagnostics = diagnostics.appendDiagnostic(
                     "app-server.initialize",
-                    "Connected to ${session.deploymentUrl}",
+                    "Connected to ${session.deploymentUrl} · Codex Web Android ${BuildConfig.VERSION_NAME}",
                 ),
             )
         }
@@ -166,10 +175,12 @@ class AppServerRepository(
     suspend fun openThread(threadId: String) {
         _state.update { it.copy(selectedThreadId = threadId, lastError = null) }
         try {
-            rpc.request("thread/resume", buildJsonObject {
+            val resumeResponse = rpc.request("thread/resume", buildJsonObject {
                 put("threadId", threadId)
+                put("excludeTurns", true)
             })
             resumedThreads += threadId
+            reconcileModelWithThread(resumeResponse.asObjectOrNull())
         } catch (error: Exception) {
             _state.update {
                 it.copy(
@@ -181,14 +192,44 @@ class AppServerRepository(
             }
         }
 
-        val response = rpc.request("thread/read", buildJsonObject {
-            put("threadId", threadId)
-            put("includeTurns", true)
-        })
+        val response = rpc.request("thread/read", buildJsonObject { put("threadId", threadId) })
         val threadJson = response.asObjectOrNull()?.obj("thread")
             ?: throw RpcException("thread/read response did not include a thread")
-        val thread = ThreadInfo.fromJson(threadJson, includeTurns = true)
-        _state.update { it.hydrateThread(thread) }
+        val thread = ThreadInfo.fromJson(threadJson)
+        reconcileModelWithThread(buildJsonObject {
+            put("model", thread.model.orEmpty())
+            put("modelProvider", thread.modelProvider.orEmpty())
+        })
+        val page = readTurnsPage(threadId, cursor = null)
+        val turns = page.turns.asReversed()
+        _state.update {
+            it.hydrateThread(thread.copy(turns = turns)).copy(
+                earlierTurnsCursorByThread = if (page.nextCursor == null) {
+                    it.earlierTurnsCursorByThread - threadId
+                } else {
+                    it.earlierTurnsCursorByThread + (threadId to page.nextCursor)
+                },
+            )
+        }
+    }
+
+    suspend fun loadEarlierTurns(threadId: String) {
+        val cursor = _state.value.earlierTurnsCursorByThread[threadId] ?: return
+        val page = readTurnsPage(threadId, cursor = cursor)
+        val earlier = page.turns.asReversed()
+        _state.update { current ->
+            val existing = current.turnsByThread[threadId].orEmpty()
+            val seen = existing.mapTo(mutableSetOf()) { it.id }
+            val merged = earlier.filter { seen.add(it.id) } + existing
+            current.copy(
+                turnsByThread = current.turnsByThread + (threadId to merged),
+                earlierTurnsCursorByThread = if (page.nextCursor == null) {
+                    current.earlierTurnsCursorByThread - threadId
+                } else {
+                    current.earlierTurnsCursorByThread + (threadId to page.nextCursor)
+                },
+            )
+        }
     }
 
     suspend fun sendMessage(text: String, cwd: String, model: String) {
@@ -273,6 +314,61 @@ class AppServerRepository(
         }
     }
 
+    private suspend fun readEffectiveConfig(): EffectiveConfigRead {
+        val parameterVariants = listOf(
+            buildJsonObject {
+                put("includeLayers", false)
+                put("cwd", JsonNull)
+            },
+            buildJsonObject { put("includeLayers", false) },
+        )
+        var lastError: Exception? = null
+        for (params in parameterVariants) {
+            try {
+                return EffectiveConfigRead(rpc.request("config/read", params), null)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+        return EffectiveConfigRead(
+            response = null,
+            error = lastError?.message ?: "config/read failed",
+        )
+    }
+
+    private suspend fun readTurnsPage(threadId: String, cursor: String?): TurnPage {
+        val params = buildJsonObject {
+            put("threadId", threadId)
+            put("limit", 50)
+            put("sortDirection", "desc")
+            put("itemsView", "full")
+            if (cursor != null) put("cursor", cursor)
+        }
+        return parseTurnPage(rpc.request("thread/turns/list", params))
+    }
+
+    private fun reconcileModelWithThread(response: JsonObject?) {
+        val model = response?.string("model")?.trim().orEmpty()
+        val provider = response?.string("modelProvider")?.trim().orEmpty()
+        if (model.isBlank() || provider.isBlank() || provider.equals("openai", ignoreCase = true)) return
+        _state.update { current ->
+            val matching = current.models.firstOrNull {
+                it.id == model || it.upstreamModelId == model
+            }
+            if (matching != null) {
+                if (current.selectedModelId == matching.id) current
+                else current.copy(selectedModelId = matching.id)
+            } else {
+                current.copy(
+                    models = listOf(configuredModelOption(ServerModelConfig(model, provider))),
+                    selectedModelId = model,
+                )
+            }
+        }
+    }
+
     private suspend fun startThread(cwd: String, model: String): String {
         val params = buildJsonObject {
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
@@ -322,6 +418,11 @@ class AppServerRepository(
         put("archived", false)
     }
 }
+
+private data class EffectiveConfigRead(
+    val response: JsonElement?,
+    val error: String?,
+)
 
 internal fun redactUrl(value: String): String {
     val index = value.indexOf('?')

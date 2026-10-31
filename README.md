@@ -10,15 +10,16 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Sign in through the deployment's normal password or SSO page in a WebView.
 - Automatically reconnect on launch while the WebView session cookie is valid.
 - Discover the bridge through `/api/codex/bridge-url`.
-- Native thread drawer backed by `thread/list`, `thread/read`, and `thread/resume`.
+- Native thread drawer backed by `thread/list`, `thread/resume`, metadata-only `thread/read`, and paginated `thread/turns/list`, with a “Load earlier messages” control.
 - Streaming assistant text from `item/agentMessage/delta`.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
-- Model picker from the server's `model/list` catalog and `config/read` model/provider settings.
+- Model picker from the server's `model/list` catalog and `config/read` model/provider settings. If `config/read` fails, the app retries, then uses thread model metadata; it never falls back to an unverified OpenAI-only catalog.
 - Server-side working-directory control.
 - Interrupt active turns through `turn/interrupt`.
 - Command, file-change, and permission approval cards using the exact app-server response schemas.
 - User-input question responses and MCP request cancellation.
 - Plan, goal, token usage, account, and connection state from app-server notifications.
+- Command terminal input from `item/commandExecution/terminalInteraction` and deprecation notices as sourced diagnostics.
 - Unknown notifications and malformed bridge messages are kept in a native diagnostics panel.
 - Self-signed APK releases from GitHub Actions.
 
@@ -49,6 +50,8 @@ The Android app resolves the session with `GET /api/auth/me` and `GET /api/codex
 ## Install
 
 Download the latest `codex-web-android-*.apk` from [GitHub Releases](https://github.com/alex-therajunction/codex-web-android/releases), allow installs from unknown sources for your browser/file manager, and install it.
+
+After an upgrade, open **More → Diagnostics** and confirm the `app-server.initialize` entry reports the installed `Codex Web Android <version>`. Use that version when reporting whether an upgrade took effect.
 
 Each APK is self-signed. If repository signing secrets are not configured, the workflow creates an ephemeral self-signed key for that build; installing a later build may require uninstall/reinstall. Configure the secrets below for stable upgrades.
 

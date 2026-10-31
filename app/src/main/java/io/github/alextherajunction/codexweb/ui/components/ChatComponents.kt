@@ -87,10 +87,23 @@ fun ChatItemRow(item: ChatItem) {
             monospaceTitle = true,
             defaultExpanded = item.status == "failed",
         ) {
-            if (item.detail.isBlank()) {
-                Text("No output", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else {
-                CodeText(item.detail)
+            Column {
+                if (item.detail.isBlank() && item.terminalInput.isBlank()) {
+                    Text("No output", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (item.detail.isNotBlank()) {
+                    CodeText(item.detail)
+                }
+                if (item.terminalInput.isNotBlank()) {
+                    if (item.detail.isNotBlank()) Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Terminal input",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CodexMuted,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    CodeText(item.terminalInput)
+                }
             }
         }
         "fileChange" -> ExpandableToolCard(

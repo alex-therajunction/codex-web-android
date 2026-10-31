@@ -91,8 +91,78 @@ class ServerModelCatalogTest {
         assertTrue(catalog.models.all { it.description.isEmpty() })
     }
 
-    private fun resolveServerModelCatalog(models: String, config: String): ServerModelCatalog =
-        resolveServerModelCatalog(parse(models), parse(config))
+    @Test
+    fun `missing config uses the selected thread model and provider`() {
+        val catalog = resolveServerModelCatalog(
+            models = """
+                {"data":[
+                  {"id":"gpt-6.1-sol","model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","description":"","isDefault":true,"hidden":false}
+                ]}
+            """,
+            config = null,
+            fallbackConfig = ServerModelConfig(
+                modelId = "deepseek-flash",
+                providerId = "deepseek",
+            ),
+        )
+
+        assertEquals(listOf("deepseek-flash"), catalog.models.map { it.id })
+        assertEquals("deepseek-flash", catalog.defaultModelId)
+    }
+
+    @Test
+    fun `missing config without a thread fallback never exposes an unverified openai catalog`() {
+        val catalog = resolveServerModelCatalog(
+            models = """
+                {"data":[
+                  {"id":"gpt-6.1-sol","model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","description":"","isDefault":true,"hidden":false}
+                ]}
+            """,
+            config = null,
+        )
+
+        assertTrue(catalog.models.isEmpty())
+        assertEquals("", catalog.defaultModelId)
+    }
+
+    @Test
+    fun `thread metadata fallback prefers the newest model-provider-bearing thread`() {
+        val fallback = serverModelConfigFromThreads(
+            listOf(
+                ThreadInfo(
+                    id = "t1",
+                    preview = "first",
+                    name = null,
+                    cwd = "/work",
+                    updatedAt = 1,
+                    status = "idle",
+                ),
+                ThreadInfo(
+                    id = "t2",
+                    preview = "second",
+                    name = null,
+                    cwd = "/work",
+                    updatedAt = 2,
+                    status = "idle",
+                    model = "deepseek-flash",
+                    modelProvider = "deepseek",
+                ),
+            ),
+        )
+
+        assertEquals("deepseek-flash", fallback?.modelId)
+        assertEquals("deepseek", fallback?.providerId)
+    }
+
+    private fun resolveServerModelCatalog(
+        models: String,
+        config: String?,
+        fallbackConfig: ServerModelConfig? = null,
+    ): ServerModelCatalog = resolveServerModelCatalog(
+        modelsResponse = parse(models),
+        configResponse = config?.let(::parse),
+        fallbackConfig = fallbackConfig,
+    )
 
     private fun parse(value: String): JsonElement = json.parseToJsonElement(value)
 }

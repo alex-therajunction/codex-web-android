@@ -56,15 +56,23 @@ internal fun parseServerModelConfig(response: JsonElement?): ServerModelConfig {
 internal fun resolveServerModelCatalog(
     modelsResponse: JsonElement,
     configResponse: JsonElement?,
+    fallbackConfig: ServerModelConfig? = null,
 ): ServerModelCatalog {
     val catalog = modelsResponse.asObjectOrNull()
         ?.array("data")
         ?.mapNotNull { (it as? JsonObject)?.let(ModelOption::fromJson) }
         ?.filter { it.id.isNotBlank() && !it.hidden }
         .orEmpty()
-    val config = parseServerModelConfig(configResponse)
+    val config = parseServerModelConfig(configResponse).withFallback(
+        if (configResponse == null) fallbackConfig else null,
+    )
     val configuredModel = config.modelId
-    val providerIsOpenAi = config.providerId.isBlank() || config.providerId.equals("openai", ignoreCase = true)
+    val providerIsOpenAi = when {
+        configResponse != null -> config.providerId.isBlank() ||
+            config.providerId.equals("openai", ignoreCase = true)
+        config.providerId.isBlank() -> false
+        else -> config.providerId.equals("openai", ignoreCase = true)
+    }
 
     val models = when {
         providerIsOpenAi -> {
@@ -88,10 +96,37 @@ internal fun resolveServerModelCatalog(
     )
 }
 
+internal fun serverModelConfigFromThreads(threads: List<ThreadInfo>): ServerModelConfig? {
+    val thread = threads.firstOrNull { !it.model.isNullOrBlank() || !it.modelProvider.isNullOrBlank() }
+        ?: return null
+    return ServerModelConfig(
+        modelId = thread.model.orEmpty().trim(),
+        providerId = thread.modelProvider.orEmpty().trim(),
+    )
+}
+
+internal fun parseTurnPage(response: JsonElement): TurnPage {
+    val obj = response.asObjectOrNull() ?: return TurnPage()
+    return TurnPage(
+        turns = obj.array("data")
+            ?.mapNotNull { (it as? JsonObject)?.let(TurnInfo::fromJson) }
+            .orEmpty(),
+        nextCursor = obj.string("nextCursor"),
+    )
+}
+
+private fun ServerModelConfig.withFallback(fallback: ServerModelConfig?): ServerModelConfig {
+    if (fallback == null) return this
+    return ServerModelConfig(
+        modelId = modelId.ifBlank { fallback.modelId },
+        providerId = providerId.ifBlank { fallback.providerId },
+    )
+}
+
 private fun ModelOption.matches(modelId: String): Boolean =
     id == modelId || upstreamModelId == modelId
 
-private fun configuredModelOption(config: ServerModelConfig): ModelOption {
+internal fun configuredModelOption(config: ServerModelConfig): ModelOption {
     val description = config.providerId.takeIf { it.isNotBlank() }
         ?.let { "Configured on the server ($it)" }
         ?: "Configured on the server"
@@ -139,6 +174,12 @@ data class ChatItem(
     val detail: String = "",
     val status: String = "",
     val isStreaming: Boolean = false,
+    val terminalInput: String = "",
+)
+
+data class TurnPage(
+    val turns: List<TurnInfo> = emptyList(),
+    val nextCursor: String? = null,
 )
 
 data class TurnInfo(
@@ -175,6 +216,8 @@ data class ThreadInfo(
     val status: String,
     val activeFlags: List<String> = emptyList(),
     val turns: List<TurnInfo> = emptyList(),
+    val model: String? = null,
+    val modelProvider: String? = null,
 ) {
     val title: String
         get() = name?.takeIf { it.isNotBlank() }
@@ -201,6 +244,8 @@ data class ThreadInfo(
                 status = statusObject?.string("type") ?: "idle",
                 activeFlags = statusObject?.stringList("activeFlags").orEmpty(),
                 turns = turns,
+                model = json.string("model"),
+                modelProvider = json.string("modelProvider"),
             )
         }
     }
@@ -252,6 +297,7 @@ data class AppServerSnapshot(
     val planByThread: Map<String, PlanInfo> = emptyMap(),
     val usageByThread: Map<String, UsageInfo> = emptyMap(),
     val goalByThread: Map<String, GoalInfo> = emptyMap(),
+    val earlierTurnsCursorByThread: Map<String, String> = emptyMap(),
     val pendingRequests: List<PendingRequest> = emptyList(),
     val diagnostics: List<Diagnostic> = emptyList(),
     val lastError: String? = null,

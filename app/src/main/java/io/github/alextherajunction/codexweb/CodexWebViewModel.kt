@@ -40,6 +40,7 @@ data class AppUiState(
     val composerText: String = "",
     val sending: Boolean = false,
     val openingThreadId: String? = null,
+    val loadingEarlierTurns: Boolean = false,
     val cwdInput: String = "",
     val snapshot: AppServerSnapshot = AppServerSnapshot(),
 )
@@ -190,6 +191,22 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 repo.refreshThreads()
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not refresh threads") }
+            }
+        }
+    }
+
+    fun loadEarlierTurns() {
+        val repo = repository ?: return
+        val threadId = _state.value.snapshot.selectedThreadId ?: return
+        if (_state.value.loadingEarlierTurns) return
+        _state.update { it.copy(loadingEarlierTurns = true, error = null) }
+        viewModelScope.launch {
+            try {
+                repo.loadEarlierTurns(threadId)
+            } catch (error: Exception) {
+                _state.update { it.copy(error = error.message ?: "Could not load earlier messages") }
+            } finally {
+                _state.update { it.copy(loadingEarlierTurns = false) }
             }
         }
     }
