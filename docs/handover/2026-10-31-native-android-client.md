@@ -53,6 +53,8 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 - `apksigner verify --verbose --print-certs` reported a valid APK Signature Scheme v2 signature.
 - An Android 15 (API 35, x86_64) emulator installed the release APK and verified URL onboarding, WebView login, native thread rendering, streamed app-server notifications, a command approval round-trip (`{"decision":"accept"}`), and automatic reconnect after a cold app restart.
 - The emulator smoke used a local mock Codex Web bridge at `10.0.2.2:3100`, not a real user `CODEX_HOME` or the local production server.
+- GitHub Actions run `41203481232` published release `android-v0.1.7` with `codex-web-android-0.1.7.apk` and a portable `.sha256` asset.
+- Re-download verification passed `sha256sum -c` and `apksigner verify --verbose --print-certs`; the release is signed by a self-signed 4096-bit RSA certificate.
 
 ## Remaining gaps
 

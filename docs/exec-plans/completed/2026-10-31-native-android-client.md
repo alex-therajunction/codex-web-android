@@ -21,6 +21,14 @@ Create a separately hosted Android client for Codex Web. It accepts the deployme
 - Launch the app in an Android emulator and inspect the onboarding/authentication/native connected states.
 - Trigger the GitHub workflow and verify a release asset exists.
 
+## Verification results
+
+- 11 unit tests passed.
+- Local release build completed and produced a v2-signed APK.
+- Android 15 emulator smoke verified onboarding, WebView login, native app-server rendering, streaming, command approval, and automatic reconnect against a local mock bridge.
+- GitHub Actions run `41203481232` passed tests, signed-release build, `apksigner` verification, artifact upload, and GitHub Release publication.
+- Release `android-v0.1.7` contains `codex-web-android-0.1.7.apk` and a portable SHA-256 checksum. The downloaded checksum passes `sha256sum -c`, and the downloaded APK passes `apksigner verify --verbose --print-certs` with a self-signed 4096-bit RSA certificate.
+
 ## Status
 
-Implementation, unit tests, local release build, emulator UI smoke, and automatic reconnect verification are complete. GitHub workflow and published release asset verification are pending.
+Complete. The native Android client is implemented and the verified self-signed APK is published at https://github.com/alex-therajunction/codex-web-android/releases/tag/android-v0.1.7.
