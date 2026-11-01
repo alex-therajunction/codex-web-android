@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -50,6 +52,7 @@ class CodexRpcClient(
         .build()
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val nextId = AtomicLong(1)
+    private val connectMutex = Mutex()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonElement>>()
     private val notifications = MutableSharedFlow<RpcNotification>(
         replay = 0,
@@ -78,6 +81,9 @@ class CodexRpcClient(
     @Volatile
     private var opened = false
 
+    val isConnected: Boolean
+        get() = opened && socket != null
+
     val notificationFlow: SharedFlow<RpcNotification> = notifications.asSharedFlow()
     val serverRequestFlow: SharedFlow<RpcServerRequest> = serverRequests.asSharedFlow()
     val malformedMessageFlow: SharedFlow<String> = malformedMessages.asSharedFlow()
@@ -88,71 +94,98 @@ class CodexRpcClient(
         cookieHeader: String?,
         origin: String,
     ) {
-        check(!opened) { "Web bridge is already connected" }
-        val builder = Request.Builder()
-            .url(endpoint)
-            .header("Origin", origin)
-            .header("User-Agent", "CodexWebAndroid/0.1")
-        if (!cookieHeader.isNullOrBlank()) {
-            builder.header("Cookie", cookieHeader)
-        }
+        connectMutex.withLock {
+            if (isConnected) return@withLock
 
-        suspendCancellableCoroutine { continuation ->
-            val listener = object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    opened = true
-                    socket = webSocket
-                    if (continuation.isActive) continuation.resume(Unit)
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    handleMessage(text)
-                }
-
-                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    webSocket.close(code, reason)
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    handleClosed("Web bridge closed ($code${if (reason.isBlank()) "" else ": $reason"})")
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val status = response?.code
-                    val detail = buildString {
-                        append(t.message ?: "WebSocket failure")
-                        if (status != null) append(" (HTTP $status)")
-                    }
-                    handleClosed(detail)
-                    if (continuation.isActive) {
-                        continuation.resumeWith(Result.failure(RpcException(detail, status)))
-                    }
-                }
+            val builder = Request.Builder()
+                .url(endpoint)
+                .header("Origin", origin)
+                .header("User-Agent", "CodexWebAndroid/0.1")
+            if (!cookieHeader.isNullOrBlank()) {
+                builder.header("Cookie", cookieHeader)
             }
 
-            val created = webSocketClient.newWebSocket(builder.build(), listener)
-            socket = created
-            continuation.invokeOnCancellation {
-                created.cancel()
-                handleClosed("Connection cancelled")
+            var connectingSocket: WebSocket? = null
+            try {
+                suspendCancellableCoroutine { continuation ->
+                    val listener = object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            if (socket !== webSocket) {
+                                webSocket.cancel()
+                                if (continuation.isActive) {
+                                    continuation.resumeWith(
+                                        Result.failure(RpcException("Web bridge connection was superseded")),
+                                    )
+                                }
+                                return
+                            }
+                            opened = true
+                            if (continuation.isActive) continuation.resume(Unit)
+                        }
+
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            if (socket === webSocket) handleMessage(text)
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            if (socket === webSocket) webSocket.close(code, reason)
+                        }
+
+                        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                            handleClosed(
+                                webSocket,
+                                "Web bridge closed ($code${if (reason.isBlank()) "" else ": $reason"})",
+                            )
+                        }
+
+                        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                            val status = response?.code
+                            val detail = buildString {
+                                append(t.message ?: "WebSocket failure")
+                                if (status != null) append(" (HTTP $status)")
+                            }
+                            handleClosed(webSocket, detail)
+                            if (continuation.isActive) {
+                                continuation.resumeWith(Result.failure(RpcException(detail, status)))
+                            }
+                        }
+                    }
+
+                    val created = webSocketClient.newWebSocket(builder.build(), listener)
+                    connectingSocket = created
+                    socket = created
+                    continuation.invokeOnCancellation {
+                        handleClosed(created, "Connection cancelled")
+                        created.cancel()
+                    }
+                }
+
+                withTimeout(25_000) {
+                    request("initialize", buildJsonObject {
+                        put("clientInfo", buildJsonObject {
+                            put("name", "codex_web_android")
+                            put("title", "Codex Web Android")
+                            put("version", "0.1.0")
+                        })
+                        put("capabilities", buildJsonObject {
+                            put("experimentalApi", true)
+                            put("requestAttestation", false)
+                            put("mcpServerOpenaiFormElicitation", false)
+                        })
+                    })
+                }
+                notify("initialized")
+            } catch (error: Exception) {
+                val failedSocket = connectingSocket
+                if (failedSocket != null && socket === failedSocket) {
+                    opened = false
+                    socket = null
+                    failPending(RpcException(error.message ?: "Web bridge connection failed"))
+                    failedSocket.cancel()
+                }
+                throw error
             }
         }
-
-        withTimeout(25_000) {
-            request("initialize", buildJsonObject {
-                put("clientInfo", buildJsonObject {
-                    put("name", "codex_web_android")
-                    put("title", "Codex Web Android")
-                    put("version", "0.1.0")
-                })
-                put("capabilities", buildJsonObject {
-                    put("experimentalApi", true)
-                    put("requestAttestation", false)
-                    put("mcpServerOpenaiFormElicitation", false)
-                })
-            })
-        }
-        notify("initialized")
     }
 
     suspend fun request(method: String, params: JsonObject? = null): JsonElement {
@@ -200,9 +233,10 @@ class CodexRpcClient(
     }
 
     fun close() {
-        opened = false
-        socket?.close(1000, "Client closed")
+        val active = socket
         socket = null
+        opened = false
+        active?.close(1000, "Client closed")
         failPending(RpcException("Web bridge disconnected"))
     }
 
@@ -266,8 +300,8 @@ class CodexRpcClient(
         malformedMessages.tryEmit("Unrecognized app-server JSON-RPC message")
     }
 
-    private fun handleClosed(reason: String) {
-        if (!opened && pending.isEmpty()) return
+    private fun handleClosed(webSocket: WebSocket, reason: String) {
+        if (socket !== webSocket) return
         opened = false
         socket = null
         failPending(RpcException(reason))

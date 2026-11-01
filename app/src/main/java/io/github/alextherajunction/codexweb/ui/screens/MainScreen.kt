@@ -45,6 +45,8 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -342,14 +344,6 @@ fun MainScreen(
                                     )
                                 }
                                 DropdownMenuItem(
-                                    text = { Text("Refresh threads") },
-                                    leadingIcon = { Icon(Icons.Rounded.Refresh, null) },
-                                    onClick = {
-                                        showOverflow = false
-                                        onRefreshThreads()
-                                    },
-                                )
-                                DropdownMenuItem(
                                     text = { Text("Server working directory") },
                                     leadingIcon = { Icon(Icons.Rounded.Folder, null) },
                                     onClick = {
@@ -555,57 +549,51 @@ private fun PermissionSelectorBar(
     var pendingFullAccess by remember { mutableStateOf(false) }
     val selected = permissionChoice(profile)
 
-    Box {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-                .clickable { expanded = true },
-            color = CodexSurface,
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(
-                1.dp,
-                if (profile == PermissionProfile.FULL_ACCESS) {
-                    CodexDanger.copy(alpha = 0.65f)
-                } else {
-                    CodexOutline
-                },
-            ),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        AssistChip(
+            onClick = { expanded = true },
+            label = {
+                Text(
+                    selected.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            leadingIcon = {
                 Icon(
                     selected.icon,
                     null,
                     tint = permissionTint(profile),
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                 )
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "PERMISSION",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CodexMuted,
-                    )
-                    Text(selected.label, style = MaterialTheme.typography.labelLarge)
-                    Text(
-                        selected.description,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CodexMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            },
+            trailingIcon = {
                 Icon(
                     Icons.Rounded.ChevronRight,
                     null,
                     tint = CodexMuted,
                     modifier = Modifier.size(18.dp),
                 )
-            }
-        }
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                labelColor = MaterialTheme.colorScheme.onSurface,
+                trailingIconContentColor = CodexMuted,
+                containerColor = CodexSurface.copy(alpha = 0.6f),
+            ),
+            border = AssistChipDefaults.assistChipBorder(
+                enabled = true,
+                borderColor = if (profile == PermissionProfile.FULL_ACCESS) {
+                    CodexDanger.copy(alpha = 0.65f)
+                } else {
+                    CodexOutline
+                },
+            ),
+        )
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },

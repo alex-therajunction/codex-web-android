@@ -43,13 +43,17 @@ class AppServerRepository(
     init {
         scope.launch {
             rpc.notificationFlow.collect { notification ->
-                _state.update { it.applyNotification(notification) }
+                _state.update {
+                    it.applyNotification(notification).withLiveBridgeConnection()
+                }
             }
         }
         scope.launch {
             rpc.serverRequestFlow.collect { request ->
                 val pending = parsePendingRequest(request.id, request.method, request.params)
-                _state.update { it.addPendingRequest(pending) }
+                _state.update {
+                    it.addPendingRequest(pending).withLiveBridgeConnection()
+                }
             }
         }
         scope.launch {
@@ -80,6 +84,18 @@ class AppServerRepository(
         openMostRecentThread: Boolean = true,
     ) {
         this.session = session
+        if (rpc.isConnected) {
+            _state.update {
+                it.copy(
+                    connection = "connected",
+                    deploymentUrl = session.deploymentUrl,
+                    bridgeUrl = redactUrl(session.bridgeUrl),
+                    userEmail = session.user.email,
+                    lastError = null,
+                )
+            }
+            return
+        }
         _state.update { current ->
             current.copy(
                 connection = "connecting",
@@ -168,6 +184,10 @@ class AppServerRepository(
     }
 
     fun markDisconnected(reason: String) {
+        if (rpc.isConnected) {
+            _state.update { it.copy(connection = "connected", lastError = null) }
+            return
+        }
         resumedThreads.clear()
         _state.update {
             it.copy(
@@ -187,6 +207,13 @@ class AppServerRepository(
     fun clearError() {
         _state.update { it.copy(lastError = null) }
     }
+
+    private fun AppServerSnapshot.withLiveBridgeConnection(): AppServerSnapshot =
+        if (connection == "disconnected" && rpc.isConnected) {
+            copy(connection = "connected", lastError = null)
+        } else {
+            this
+        }
 
     fun selectModel(modelId: String) {
         val current = _state.value

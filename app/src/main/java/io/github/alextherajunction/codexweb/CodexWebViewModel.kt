@@ -50,6 +50,8 @@ data class AppUiState(
     val authUrl: String = "",
     val error: String? = null,
     val composerText: String = "",
+    val composerDraftKey: String = NEW_CHAT_COMPOSER_DRAFT_KEY,
+    val composerDrafts: Map<String, String> = emptyMap(),
     val sending: Boolean = false,
     val openingThreadId: String? = null,
     val loadingEarlierTurns: Boolean = false,
@@ -122,7 +124,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateComposer(value: String) {
-        _state.update { it.copy(composerText = value) }
+        _state.update { it.withComposerDraft(value) }
     }
 
     fun handleNotificationIntent(intent: Intent?) {
@@ -223,7 +225,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     fun newChatInProject(path: String) {
         repository?.startNewChat()
         selectProject(path)
-        _state.update { it.copy(composerText = "", error = null) }
+        _state.update { it.withThreadComposerDraft(null).copy(error = null) }
     }
 
     fun updateModel(modelId: String) {
@@ -333,7 +335,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     fun selectThread(threadId: String) {
         val repo = repository ?: return
         if (_state.value.snapshot.selectedThreadId == threadId) return
-        _state.update { it.copy(openingThreadId = threadId, error = null) }
+        _state.update {
+            it.copy(openingThreadId = threadId, error = null)
+                .withThreadComposerDraft(threadId)
+        }
         viewModelScope.launch {
             try {
                 repo.openThread(threadId)
@@ -350,7 +355,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     fun newChat() {
         repository?.startNewChat()
-        _state.update { it.copy(composerText = "", error = null) }
+        _state.update { it.withThreadComposerDraft(null).copy(error = null) }
     }
 
     fun refreshThreads() {
@@ -420,9 +425,12 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     fun sendMessage() {
         val repo = repository ?: return
-        val text = _state.value.composerText.trim()
+        val current = _state.value
+        val submittedDraft = current.composerText
+        val originDraftKey = current.composerDraftKey
+        val text = submittedDraft.trim()
         if (text.isEmpty() || _state.value.sending) return
-        val snapshot = _state.value.snapshot
+        val snapshot = current.snapshot
         if (snapshot.connection != "connected") {
             _state.update { it.copy(error = "Connection lost. Reconnecting to app-server…") }
             return
@@ -442,7 +450,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                     model = snapshot.selectedModelId,
                     effort = snapshot.selectedReasoningEffort,
                 )
-                _state.update { it.copy(composerText = "") }
+                _state.update { it.afterComposerSend(originDraftKey, submittedDraft) }
                 runCatching { repo.refreshThreads() }
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not send message") }
@@ -603,7 +611,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                                 snapshot = snapshot,
                                 cwdInput = selectedProject
                                     ?: it.cwdInput.ifBlank { snapshot.workspaceCwd },
-                            )
+                            ).withAdoptedSelectedThreadDraft()
                         }
                         if (
                             wasConnected &&
@@ -659,7 +667,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     private fun startReconnect(repo: AppServerRepository) {
         if (repository !== repo || _state.value.phase != AppPhase.READY) return
-        reconnectJob?.cancel()
+        if (reconnectJob?.isActive == true) return
         reconnectJob = viewModelScope.launch {
             var attempt = 0
             while (isActive && repository === repo && _state.value.phase == AppPhase.READY) {

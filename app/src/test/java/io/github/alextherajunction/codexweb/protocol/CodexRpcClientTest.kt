@@ -2,6 +2,7 @@ package io.github.alextherajunction.codexweb.protocol
 
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -43,6 +44,52 @@ class CodexRpcClientTest {
             val response = client.request("ping")
             assertEquals("pong", response.jsonObject["value"]?.jsonPrimitive?.content)
             assertTrue(closedAgain.await().contains("done"))
+        } finally {
+            client.close()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `connect is idempotent while the bridge remains open`() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        val client = CodexRpcClient()
+        try {
+            server.enqueue(rpcResponse(closeAfterInitialize = false))
+            val endpoint = server.url("/codex-bridge").toString().replaceFirst("http", "ws")
+
+            client.connect(endpoint, cookieHeader = null, origin = "http://localhost")
+            client.connect(endpoint, cookieHeader = null, origin = "http://localhost")
+            val response = client.request("ping")
+
+            assertEquals("pong", response.jsonObject["value"]?.jsonPrimitive?.content)
+            assertEquals(1, server.requestCount)
+        } finally {
+            client.close()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `concurrent connects reuse one bridge socket`() = runBlocking {
+        val server = MockWebServer()
+        server.start()
+        val client = CodexRpcClient()
+        try {
+            server.enqueue(rpcResponse(closeAfterInitialize = false))
+            val endpoint = server.url("/codex-bridge").toString().replaceFirst("http", "ws")
+
+            coroutineScope {
+                val first = async { client.connect(endpoint, cookieHeader = null, origin = "http://localhost") }
+                val second = async { client.connect(endpoint, cookieHeader = null, origin = "http://localhost") }
+                first.await()
+                second.await()
+            }
+            val response = client.request("ping")
+
+            assertEquals("pong", response.jsonObject["value"]?.jsonPrimitive?.content)
+            assertEquals(1, server.requestCount)
         } finally {
             client.close()
             server.shutdown()
