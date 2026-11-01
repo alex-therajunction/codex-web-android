@@ -82,6 +82,7 @@ class AppServerRepository(
         _state.update { current ->
             current.copy(
                 connection = "connecting",
+                pendingRequests = emptyList(),
                 deploymentUrl = session.deploymentUrl,
                 bridgeUrl = redactUrl(session.bridgeUrl),
                 userEmail = session.user.email,
@@ -126,10 +127,15 @@ class AppServerRepository(
             val selectedModelId = current.selectedModelId.takeIf { selected ->
                 modelCatalog.models.any { it.id == selected }
             } ?: modelCatalog.defaultModelId
+            val selectedReasoningEffort = modelCatalog.models
+                .firstOrNull { it.id == selectedModelId }
+                ?.effectiveReasoningEffort(current.selectedReasoningEffort)
+                ?: modelCatalog.defaultReasoningEffort
             current.copy(
                 connection = "connected",
                 models = modelCatalog.models,
                 selectedModelId = selectedModelId,
+                selectedReasoningEffort = selectedReasoningEffort,
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
@@ -175,8 +181,21 @@ class AppServerRepository(
     }
 
     fun selectModel(modelId: String) {
-        if (_state.value.models.none { it.id == modelId }) return
-        _state.update { it.copy(selectedModelId = modelId) }
+        val current = _state.value
+        val model = current.models.firstOrNull { it.id == modelId } ?: return
+        _state.update {
+            it.copy(
+                selectedModelId = modelId,
+                selectedReasoningEffort = model.effectiveReasoningEffort(current.selectedReasoningEffort),
+            )
+        }
+    }
+
+    fun selectReasoningEffort(effort: String) {
+        val current = _state.value
+        val model = current.models.firstOrNull { it.id == current.selectedModelId } ?: return
+        if (effort !in model.reasoningEfforts) return
+        _state.update { it.copy(selectedReasoningEffort = effort) }
     }
 
     fun updateWorkspaceCwd(path: String) {
@@ -266,12 +285,12 @@ class AppServerRepository(
         }
     }
 
-    suspend fun sendMessage(text: String, cwd: String, model: String) {
+    suspend fun sendMessage(text: String, cwd: String, model: String, effort: String?) {
         val message = text.trim()
         if (message.isEmpty()) return
         sendMutex.withLock {
             val current = _state.value
-            val threadId = current.selectedThreadId ?: startThread(cwd, model)
+            val threadId = current.selectedThreadId ?: startThread(cwd, model, effort)
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
 
             if (threadId !in resumedThreads) {
@@ -293,6 +312,7 @@ class AppServerRepository(
                 }
                 put("cwd", normalizedCwd)
                 if (model.isNotBlank()) put("model", model)
+                if (!effort.isNullOrBlank()) put("effort", effort)
             }
             val response = rpc.request("turn/start", params)
             val turn = response.asObjectOrNull()?.obj("turn")
@@ -386,28 +406,45 @@ class AppServerRepository(
     private fun reconcileModelWithThread(response: JsonObject?) {
         val model = response?.string("model")?.trim().orEmpty()
         val provider = response?.string("modelProvider")?.trim().orEmpty()
-        if (model.isBlank() || provider.isBlank() || provider.equals("openai", ignoreCase = true)) return
+        val threadEffort = response?.string("reasoningEffort")?.trim().orEmpty()
+        if (model.isBlank() && threadEffort.isBlank()) return
         _state.update { current ->
             val matching = current.models.firstOrNull {
                 it.id == model || it.upstreamModelId == model
             }
-            if (matching != null) {
-                if (current.selectedModelId == matching.id) current
-                else current.copy(selectedModelId = matching.id)
+            val nextModels = if (
+                matching == null && model.isNotBlank() && provider.isNotBlank() &&
+                !provider.equals("openai", ignoreCase = true)
+            ) {
+                listOf(configuredModelOption(ServerModelConfig(model, provider)))
             } else {
-                current.copy(
-                    models = listOf(configuredModelOption(ServerModelConfig(model, provider))),
-                    selectedModelId = model,
-                )
+                current.models
             }
+            val nextModelId = when {
+                matching != null -> matching.id
+                nextModels.size == 1 && model.isNotBlank() -> model
+                else -> current.selectedModelId
+            }
+            val selectedModel = nextModels.firstOrNull { it.id == nextModelId }
+            val nextEffort = selectedModel?.effectiveReasoningEffort(
+                threadEffort.ifBlank { current.selectedReasoningEffort },
+            )
+            current.copy(
+                models = nextModels,
+                selectedModelId = nextModelId,
+                selectedReasoningEffort = nextEffort ?: threadEffort.takeIf { it.isNotBlank() },
+            )
         }
     }
 
-    private suspend fun startThread(cwd: String, model: String): String {
+    private suspend fun startThread(cwd: String, model: String, effort: String?): String {
         val params = buildJsonObject {
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
             if (normalizedCwd.isNotBlank()) put("cwd", normalizedCwd)
             if (model.isNotBlank()) put("model", model)
+            if (!effort.isNullOrBlank()) {
+                putJsonObject("config") { put("model_reasoning_effort", effort) }
+            }
             put("serviceName", "codex_web_android")
             put("threadSource", "codex_web_android")
         }

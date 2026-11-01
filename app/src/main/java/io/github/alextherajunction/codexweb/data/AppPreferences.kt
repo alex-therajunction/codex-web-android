@@ -29,9 +29,18 @@ class AppPreferences(context: Context) {
             }.apply()
         }
 
+    var lastReasoningEffort: String?
+        get() = preferences.getString(KEY_LAST_REASONING_EFFORT, null)
+        set(value) {
+            preferences.edit().apply {
+                if (value.isNullOrBlank()) remove(KEY_LAST_REASONING_EFFORT) else putString(KEY_LAST_REASONING_EFFORT, value)
+            }.apply()
+        }
+
     companion object {
         private const val KEY_DEPLOYMENT_URL = "deployment_url"
         private const val KEY_LAST_MODEL = "last_model"
         private const val KEY_LAST_PROJECT = "last_project"
+        private const val KEY_LAST_REASONING_EFFORT = "last_reasoning_effort"
     }
 }

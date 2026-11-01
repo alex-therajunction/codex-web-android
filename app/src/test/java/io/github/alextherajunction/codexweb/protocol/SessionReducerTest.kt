@@ -2,6 +2,7 @@ package io.github.alextherajunction.codexweb.protocol
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -98,6 +99,22 @@ class SessionReducerTest {
     }
 
     @Test
+    fun `pending requests are scoped to the selected thread`() {
+        val global = pendingRequest(1, "item/tool/requestUserInput", """{"questions":[]}""")
+        val first = pendingRequest(2, "item/commandExecution/requestApproval", """{"threadId":"t1","turnId":"u1","itemId":"i1","command":"ls"}""")
+        val second = pendingRequest(3, "item/fileChange/requestApproval", """{"threadId":"t2","turnId":"u2","itemId":"i2","reason":"write"}""")
+
+        val state = AppServerSnapshot(
+            selectedThreadId = "t2",
+            pendingRequests = listOf(global, first, second),
+        )
+
+        assertEquals(listOf(global.id, second.id), state.selectedPendingRequests.map { it.id })
+        assertEquals(listOf(global.id), state.copy(selectedThreadId = null).selectedPendingRequests.map { it.id })
+        assertEquals(listOf(global.id, first.id), state.copy(selectedThreadId = "t1").selectedPendingRequests.map { it.id })
+    }
+
+    @Test
     fun `deprecation notice is preserved as a sourced diagnostic without unhandled prefix`() {
         val state = AppServerSnapshot().applyNotification(
             notification(
@@ -115,4 +132,11 @@ class SessionReducerTest {
 
     private fun notification(method: String, params: String): RpcNotification =
         RpcNotification(method, json.parseToJsonElement(params).jsonObject as JsonObject)
+
+    private fun pendingRequest(id: Int, method: String, params: String): PendingRequest =
+        parsePendingRequest(
+            JsonPrimitive(id),
+            method,
+            json.parseToJsonElement(params).jsonObject as JsonObject,
+        )
 }

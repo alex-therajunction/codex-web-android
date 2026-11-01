@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -537,40 +539,62 @@ fun PendingRequestCard(
             }
             if (request.body.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
-                CodeText(request.body)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 160.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    CodeText(request.body)
+                }
             }
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = CodexOutline)
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (request.kind) {
-                    PendingRequestKind.COMMAND_APPROVAL,
-                    PendingRequestKind.FILE_APPROVAL,
-                    PendingRequestKind.PERMISSIONS_APPROVAL -> {
-                        OutlinedButton(onClick = { onApprove(ApprovalDecision.DENY) }) {
+            when (request.kind) {
+                PendingRequestKind.COMMAND_APPROVAL,
+                PendingRequestKind.FILE_APPROVAL,
+                PendingRequestKind.PERMISSIONS_APPROVAL -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { onApprove(ApprovalDecision.DENY) },
+                            modifier = Modifier.weight(1f),
+                        ) {
                             Text("Deny")
                         }
                         Button(
                             onClick = { onApprove(ApprovalDecision.ALLOW) },
+                            modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = CodexLime, contentColor = Color(0xFF12150F)),
                         ) {
                             Text("Allow once")
                         }
-                        TextButton(onClick = { onApprove(ApprovalDecision.ALLOW_SESSION) }) {
-                            Text("For session", color = CodexLime)
-                        }
                     }
-                    PendingRequestKind.USER_INPUT -> {
-                        Button(
-                            onClick = onAnswer,
-                            colors = ButtonDefaults.buttonColors(containerColor = CodexLime, contentColor = Color(0xFF12150F)),
-                        ) { Text("Answer") }
+                    TextButton(
+                        onClick = { onApprove(ApprovalDecision.ALLOW_SESSION) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Allow for session", color = CodexLime)
                     }
-                    PendingRequestKind.MCP_ELICITATION -> {
-                        OutlinedButton(onClick = onCancelMcp) { Text("Cancel request") }
+                }
+                PendingRequestKind.USER_INPUT -> {
+                    Button(
+                        onClick = onAnswer,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = CodexLime, contentColor = Color(0xFF12150F)),
+                    ) { Text("Answer") }
+                }
+                PendingRequestKind.MCP_ELICITATION -> {
+                    OutlinedButton(onClick = onCancelMcp, modifier = Modifier.fillMaxWidth()) {
+                        Text("Cancel request")
                     }
-                    PendingRequestKind.UNKNOWN -> {
-                        OutlinedButton(onClick = onReject) { Text("Reject unsupported") }
+                }
+                PendingRequestKind.UNKNOWN -> {
+                    OutlinedButton(onClick = onReject, modifier = Modifier.fillMaxWidth()) {
+                        Text("Reject unsupported")
                     }
                 }
             }

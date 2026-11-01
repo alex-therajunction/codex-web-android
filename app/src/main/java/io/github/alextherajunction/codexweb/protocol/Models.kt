@@ -38,11 +38,13 @@ data class ModelOption(
 data class ServerModelConfig(
     val modelId: String = "",
     val providerId: String = "",
+    val reasoningEffort: String = "",
 )
 
 data class ServerModelCatalog(
     val models: List<ModelOption> = emptyList(),
     val defaultModelId: String = "",
+    val defaultReasoningEffort: String? = null,
 )
 
 internal fun parseServerModelConfig(response: JsonElement?): ServerModelConfig {
@@ -50,6 +52,7 @@ internal fun parseServerModelConfig(response: JsonElement?): ServerModelConfig {
     return ServerModelConfig(
         modelId = config.string("model")?.trim().orEmpty(),
         providerId = config.string("model_provider")?.trim().orEmpty(),
+        reasoningEffort = config.string("model_reasoning_effort")?.trim().orEmpty(),
     )
 }
 
@@ -67,6 +70,8 @@ internal fun resolveServerModelCatalog(
         if (configResponse == null) fallbackConfig else null,
     )
     val configuredModel = config.modelId
+    val isDeepSeek = config.providerId.equals("deepseek", ignoreCase = true) ||
+        configuredModel.startsWith("deepseek", ignoreCase = true)
     val providerIsOpenAi = when {
         configResponse != null -> config.providerId.isBlank() ||
             config.providerId.equals("openai", ignoreCase = true)
@@ -75,6 +80,7 @@ internal fun resolveServerModelCatalog(
     }
 
     val models = when {
+        isDeepSeek -> deepSeekModels(configuredModel)
         providerIsOpenAi -> {
             catalog.toMutableList().apply {
                 if (configuredModel.isNotBlank() && none { it.matches(configuredModel) }) {
@@ -93,6 +99,7 @@ internal fun resolveServerModelCatalog(
     return ServerModelCatalog(
         models = models,
         defaultModelId = defaultModel?.id.orEmpty(),
+        defaultReasoningEffort = defaultModel?.effectiveReasoningEffort(config.reasoningEffort),
     )
 }
 
@@ -120,6 +127,7 @@ private fun ServerModelConfig.withFallback(fallback: ServerModelConfig?): Server
     return ServerModelConfig(
         modelId = modelId.ifBlank { fallback.modelId },
         providerId = providerId.ifBlank { fallback.providerId },
+        reasoningEffort = reasoningEffort.ifBlank { fallback.reasoningEffort },
     )
 }
 
@@ -135,10 +143,56 @@ internal fun configuredModelOption(config: ServerModelConfig): ModelOption {
         displayName = config.modelId,
         description = description,
         isDefault = true,
-        reasoningEfforts = emptyList(),
-        defaultReasoningEffort = null,
+        reasoningEfforts = CUSTOM_PROVIDER_EFFORTS,
+        defaultReasoningEffort = DEFAULT_CUSTOM_PROVIDER_EFFORT,
         upstreamModelId = config.modelId,
     )
+}
+
+internal fun ModelOption.effectiveReasoningEffort(preferred: String? = null): String? {
+    val normalized = preferred?.trim().orEmpty()
+    if (normalized.isNotBlank() && normalized in reasoningEfforts) return normalized
+    val modelDefault = defaultReasoningEffort?.trim().orEmpty()
+    if (modelDefault.isNotBlank() && modelDefault in reasoningEfforts) return modelDefault
+    return reasoningEfforts.firstOrNull()
+}
+
+private val CUSTOM_PROVIDER_EFFORTS = listOf("low", "medium", "high")
+private const val DEFAULT_CUSTOM_PROVIDER_EFFORT = "medium"
+
+private val DEEPSEEK_MODELS = listOf(
+    ModelOption(
+        id = "deepseek-flash",
+        displayName = "DeepSeek Flash",
+        description = "DeepSeek fast reasoning model",
+        isDefault = true,
+        reasoningEfforts = CUSTOM_PROVIDER_EFFORTS,
+        defaultReasoningEffort = DEFAULT_CUSTOM_PROVIDER_EFFORT,
+        upstreamModelId = "deepseek-flash",
+    ),
+    ModelOption(
+        id = "deepseek-v4-pro",
+        displayName = "DeepSeek V4 Pro",
+        description = "DeepSeek frontier model",
+        isDefault = false,
+        reasoningEfforts = CUSTOM_PROVIDER_EFFORTS,
+        defaultReasoningEffort = DEFAULT_CUSTOM_PROVIDER_EFFORT,
+        upstreamModelId = "deepseek-v4-pro",
+    ),
+)
+
+private fun deepSeekModels(configuredModel: String): List<ModelOption> {
+    val models = DEEPSEEK_MODELS.toMutableList()
+    if (configuredModel.isBlank()) return models
+    val index = models.indexOfFirst { it.matches(configuredModel) }
+    when {
+        index > 0 -> models.add(0, models.removeAt(index))
+        index < 0 -> models.add(
+            0,
+            configuredModelOption(ServerModelConfig(configuredModel, "deepseek")),
+        )
+    }
+    return models
 }
 
 data class UsageInfo(
@@ -289,6 +343,7 @@ data class AppServerSnapshot(
     val workspaceCwd: String = "",
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String = "",
+    val selectedReasoningEffort: String? = null,
     val threads: List<ThreadInfo> = emptyList(),
     val selectedThreadId: String? = null,
     val turnsByThread: Map<String, List<TurnInfo>> = emptyMap(),
@@ -304,6 +359,11 @@ data class AppServerSnapshot(
 ) {
     val selectedThread: ThreadInfo?
         get() = threads.firstOrNull { it.id == selectedThreadId }
+
+    val selectedPendingRequests: List<PendingRequest>
+        get() = pendingRequests.filter {
+            it.threadId == null || (selectedThreadId != null && it.threadId == selectedThreadId)
+        }
 
     val selectedTurns: List<TurnInfo>
         get() = selectedThreadId?.let { turnsByThread[it] }.orEmpty()

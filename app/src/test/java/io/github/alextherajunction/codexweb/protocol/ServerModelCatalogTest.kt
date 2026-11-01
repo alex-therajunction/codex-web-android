@@ -19,12 +19,39 @@ class ServerModelCatalogTest {
                   {"id":"gpt-6-astra","model":"gpt-6-astra","displayName":"GPT-6-Astra","description":"Catalog model","isDefault":false,"hidden":false}
                 ]}
             """,
-            config = """{"config":{"model":"deepseek-flash","model_provider":"deepseek"}}""",
+            config = """{"config":{"model":"deepseek-flash","model_provider":"deepseek","model_reasoning_effort":"high"}}""",
         )
 
-        assertEquals(listOf("deepseek-flash"), catalog.models.map { it.id })
+        assertEquals(listOf("deepseek-flash", "deepseek-v4-pro"), catalog.models.map { it.id })
         assertEquals("deepseek-flash", catalog.defaultModelId)
-        assertEquals("Configured on the server (deepseek)", catalog.models.single().description)
+        assertEquals(listOf("low", "medium", "high"), catalog.models.first().reasoningEfforts)
+        assertEquals("high", catalog.defaultReasoningEffort)
+    }
+
+    @Test
+    fun `configured deepseek pro model is offered alongside flash`() {
+        val catalog = resolveServerModelCatalog(
+            models = """{"data":[]}""",
+            config = """{"config":{"model":"deepseek-v4-pro","model_provider":"deepseek"}}""",
+        )
+
+        assertEquals(listOf("deepseek-v4-pro", "deepseek-flash"), catalog.models.map { it.id })
+        assertEquals("deepseek-v4-pro", catalog.defaultModelId)
+        assertEquals("medium", catalog.defaultReasoningEffort)
+    }
+
+    @Test
+    fun `custom non-openai models retain configurable reasoning levels`() {
+        val catalog = resolveServerModelCatalog(
+            models = """{"data":[]}""",
+            config = """{"config":{"model":"custom-agent-v1","model_provider":"custom"}}""",
+        )
+
+        val model = catalog.models.single()
+        assertEquals("custom-agent-v1", model.id)
+        assertEquals(listOf("low", "medium", "high"), model.reasoningEfforts)
+        assertEquals("medium", model.defaultReasoningEffort)
+        assertEquals("medium", catalog.defaultReasoningEffort)
     }
 
     @Test
@@ -106,8 +133,9 @@ class ServerModelCatalogTest {
             ),
         )
 
-        assertEquals(listOf("deepseek-flash"), catalog.models.map { it.id })
+        assertEquals(listOf("deepseek-flash", "deepseek-v4-pro"), catalog.models.map { it.id })
         assertEquals("deepseek-flash", catalog.defaultModelId)
+        assertEquals("medium", catalog.defaultReasoningEffort)
     }
 
     @Test

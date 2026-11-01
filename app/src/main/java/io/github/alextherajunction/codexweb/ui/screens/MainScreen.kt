@@ -120,6 +120,7 @@ fun MainScreen(
     onRefreshThreads: () -> Unit,
     onLoadEarlierTurns: () -> Unit,
     onModelSelected: (String) -> Unit,
+    onReasoningEffortSelected: (String) -> Unit,
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
@@ -142,8 +143,10 @@ fun MainScreen(
     var userInputRequest by remember { mutableStateOf<PendingRequest?>(null) }
 
     val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
+    val selectedEffort = snapshot.selectedReasoningEffort
     val activeTurnId = snapshot.selectedActiveTurnId
-    val firstPending = snapshot.pendingRequests.firstOrNull()
+    val selectedPendingRequests = snapshot.selectedPendingRequests
+    val firstPending = selectedPendingRequests.firstOrNull()
     val isNewChat = snapshot.selectedThreadId == null
     val currentProject = normalizeProjectPath(
         snapshot.selectedThread?.cwd
@@ -227,12 +230,22 @@ fun MainScreen(
                     actions = {
                         Box {
                             TextButton(onClick = { showModelMenu = true }) {
-                                Text(
-                                    text = selectedModel?.displayName ?: "Model",
-                                    maxLines = 1,
-                                    color = CodexLime,
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = selectedModel?.displayName ?: "Model",
+                                        maxLines = 1,
+                                        color = CodexLime,
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                    if (!selectedEffort.isNullOrBlank()) {
+                                        Text(
+                                            text = effortLabel(selectedEffort),
+                                            maxLines = 1,
+                                            color = CodexMuted,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                }
                             }
                             DropdownMenu(
                                 expanded = showModelMenu,
@@ -266,10 +279,27 @@ fun MainScreen(
                                                     Icon(Icons.Rounded.Check, null, tint = CodexLime)
                                                 }
                                             },
-                                            onClick = {
-                                                onModelSelected(model.id)
-                                                showModelMenu = false
+                                            onClick = { onModelSelected(model.id) },
+                                        )
+                                    }
+                                }
+                                if (!selectedModel?.reasoningEfforts.isNullOrEmpty()) {
+                                    HorizontalDivider()
+                                    Text(
+                                        "Reasoning effort",
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = CodexMuted,
+                                    )
+                                    selectedModel?.reasoningEfforts.orEmpty().forEach { effort ->
+                                        DropdownMenuItem(
+                                            text = { Text(effortLabel(effort)) },
+                                            leadingIcon = {
+                                                if (effort == selectedEffort) {
+                                                    Icon(Icons.Rounded.Check, null, tint = CodexLime)
+                                                }
                                             },
+                                            onClick = { onReasoningEffortSelected(effort) },
                                         )
                                     }
                                 }
@@ -341,7 +371,11 @@ fun MainScreen(
                 ContextChips(
                     cwd = state.cwdInput.ifBlank { snapshot.workspaceCwd },
                     usage = snapshot.selectedUsage,
-                    model = selectedModel?.displayName,
+                    model = selectedModel?.displayName?.let { modelName ->
+                        selectedEffort?.takeIf { it.isNotBlank() }
+                            ?.let { "$modelName · ${effortLabel(it)}" }
+                            ?: modelName
+                    },
                     onCwdClick = {
                         if (isNewChat) showProjectPicker = true else showCwdDialog = true
                     },
@@ -366,7 +400,7 @@ fun MainScreen(
                         PendingRequestCard(
                             request = firstPending,
                             index = 0,
-                            total = snapshot.pendingRequests.size,
+                            total = selectedPendingRequests.size,
                             onApprove = { onApprove(firstPending, it) },
                             onAnswer = { userInputRequest = firstPending },
                             onCancelMcp = { onCancelMcp(firstPending) },
@@ -777,7 +811,7 @@ private fun ThreadRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp)
+            .padding(start = 35.dp, end = 10.dp)
             .clickable(onClick = onClick),
         color = if (selected) CodexSurfaceHigh else Color.Transparent,
         shape = RoundedCornerShape(12.dp),
@@ -1059,6 +1093,9 @@ private fun Composer(
         }
     }
 }
+
+private fun effortLabel(value: String): String =
+    value.replaceFirstChar { character -> character.uppercase() }
 
 private fun threadStatusColor(thread: ThreadInfo): Color = when {
     thread.activeFlags.isNotEmpty() -> CodexAmber

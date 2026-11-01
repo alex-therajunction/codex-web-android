@@ -135,6 +135,17 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         if (repository.state.value.models.none { it.id == modelId }) return
         preferences.lastModelId = modelId
         repository.selectModel(modelId)
+        preferences.lastReasoningEffort = repository.state.value.selectedReasoningEffort
+    }
+
+    fun updateReasoningEffort(effort: String) {
+        val repository = repository ?: return
+        val model = repository.state.value.models
+            .firstOrNull { it.id == repository.state.value.selectedModelId }
+            ?: return
+        if (effort !in model.reasoningEfforts) return
+        preferences.lastReasoningEffort = effort
+        repository.selectReasoningEffort(effort)
     }
 
     fun beginLogin() {
@@ -316,7 +327,12 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         _state.update { it.copy(sending = true, error = null) }
         viewModelScope.launch {
             try {
-                repo.sendMessage(text, cwd, snapshot.selectedModelId)
+                repo.sendMessage(
+                    text = text,
+                    cwd = cwd,
+                    model = snapshot.selectedModelId,
+                    effort = snapshot.selectedReasoningEffort,
+                )
                 _state.update { it.copy(composerText = "") }
                 runCatching { repo.refreshThreads() }
             } catch (error: Exception) {
@@ -486,6 +502,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 preferences.lastModelId
                     ?.takeIf { preferred -> repo.state.value.models.any { it.id == preferred } }
                     ?.let(repo::selectModel)
+                if (repo.state.value.selectedThreadId == null) {
+                    preferences.lastReasoningEffort
+                        ?.let(repo::selectReasoningEffort)
+                }
                 _state.update {
                     it.copy(
                         phase = AppPhase.READY,
@@ -547,6 +567,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                     preferences.lastModelId
                         ?.takeIf { preferred -> repo.state.value.models.any { it.id == preferred } }
                         ?.let(repo::selectModel)
+                    if (repo.state.value.selectedThreadId == null) {
+                        preferences.lastReasoningEffort
+                            ?.let(repo::selectReasoningEffort)
+                    }
                     _state.update {
                         it.copy(
                             reconnecting = false,
