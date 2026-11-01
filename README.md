@@ -24,6 +24,10 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Command, file-change, and permission approval cards using the exact app-server response schemas.
 - User-input question responses and MCP request cancellation.
 - Plan, goal, token usage, account, and connection state from app-server notifications.
+- Slash-command parity with the Codex Web composer, including inline suggestions for `/mcp`, `/review`, `/compact`, `/reasoning`, `/model`, `/status`, `/goal`, `/plan`, and `/memories`, plus `/help`, `/clear`, and `/cost`.
+- Goal lifecycle commands backed by `thread/goal/*`: bare `/goal` enters goal-objective mode for the next prompt, `/goal <objective>` sets it immediately, and `/goal pause|resume|edit|clear` manages it. Goal state is reloaded with `thread/goal/get` when a thread is reopened.
+- Plan mode submits Turns with the web-compatible `collaborationMode` request and remains removable through the composer chip.
+- Native command panels for MCP server status, code review, model and reasoning selection, task status and rate limits, memory settings, help, and token usage. `/clear` clears the locally displayed conversation without deleting server history.
 - Command terminal input from `item/commandExecution/terminalInteraction` and deprecation notices as sourced diagnostics.
 - Unknown notifications and malformed bridge messages are kept in a native diagnostics panel.
 - UnifiedPush notifications for completed or failed Turns, completed goals, approvals, and user-input prompts.

@@ -60,6 +60,21 @@ class SessionReducerTest {
     }
 
     @Test
+    fun `clears a goal for the affected thread only`() {
+        var state = AppServerSnapshot(
+            goalByThread = mapOf(
+                "t1" to GoalInfo("Ship Android", "active", 10, 100, 5),
+                "t2" to GoalInfo("Keep web", "paused", 20, null, 6),
+            ),
+        )
+
+        state = state.applyNotification(notification("thread/goal/cleared", """{"threadId":"t1"}"""))
+
+        assertEquals(null, state.goalByThread["t1"])
+        assertEquals("Keep web", state.goalByThread.getValue("t2").objective)
+    }
+
+    @Test
     fun `terminal interaction is shown on the command item and is not a diagnostic`() {
         var state = AppServerSnapshot(
             turnsByThread = mapOf(

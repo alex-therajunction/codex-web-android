@@ -210,6 +210,25 @@ data class GoalInfo(
     val timeUsedSeconds: Long,
 )
 
+data class McpServerSummary(
+    val name: String,
+    val toolCount: Int,
+    val authStatus: String,
+    val runtimeStatus: String?,
+)
+
+data class RateLimitSummary(
+    val primaryUsedPercent: Int?,
+    val secondaryUsedPercent: Int?,
+    val primaryResetsAt: Long?,
+    val secondaryResetsAt: Long?,
+)
+
+data class MemorySettings(
+    val useMemories: Boolean = true,
+    val generateMemories: Boolean = true,
+)
+
 data class PlanInfo(
     val explanation: String?,
     val steps: List<PlanStep>,
@@ -542,6 +561,39 @@ internal fun parseGoal(json: JsonObject): GoalInfo = GoalInfo(
     tokenBudget = json.long("tokenBudget"),
     timeUsedSeconds = json.long("timeUsedSeconds") ?: 0,
 )
+
+internal fun parseMcpServerSummaries(response: JsonElement): List<McpServerSummary> =
+    response.asObjectOrNull()?.array("data")
+        ?.mapNotNull { it as? JsonObject }
+        ?.map { server ->
+            McpServerSummary(
+                name = server.string("name").orEmpty(),
+                toolCount = server.obj("tools")?.size ?: 0,
+                authStatus = server.string("authStatus").orEmpty(),
+                runtimeStatus = server.string("runtimeStatus"),
+            )
+        }
+        .orEmpty()
+
+internal fun parseRateLimitSummary(response: JsonElement): RateLimitSummary {
+    val limits = response.asObjectOrNull()?.obj("rateLimits")
+    val primary = limits?.obj("primary")
+    val secondary = limits?.obj("secondary")
+    return RateLimitSummary(
+        primaryUsedPercent = primary?.int("usedPercent"),
+        secondaryUsedPercent = secondary?.int("usedPercent"),
+        primaryResetsAt = primary?.long("resetsAt"),
+        secondaryResetsAt = secondary?.long("resetsAt"),
+    )
+}
+
+internal fun parseMemorySettings(response: JsonElement): MemorySettings {
+    val memories = response.asObjectOrNull()?.obj("config")?.obj("memories")
+    return MemorySettings(
+        useMemories = memories?.boolean("use_memories") != false,
+        generateMemories = memories?.boolean("generate_memories") != false,
+    )
+}
 
 internal fun parsePlan(params: JsonObject): PlanInfo = PlanInfo(
     explanation = params.string("explanation"),

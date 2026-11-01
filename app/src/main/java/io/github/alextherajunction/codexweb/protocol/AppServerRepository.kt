@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -309,6 +310,17 @@ class AppServerRepository(
                 },
             )
         }
+        runCatching { getGoal(threadId) }
+            .onFailure { error ->
+                _state.update {
+                    it.copy(
+                        diagnostics = it.appendDiagnostic(
+                            "app-server.thread/goal/get",
+                            error.message ?: "Goal state unavailable",
+                        ),
+                    )
+                }
+            }
     }
 
     suspend fun loadEarlierTurns(threadId: String) {
@@ -330,14 +342,170 @@ class AppServerRepository(
         }
     }
 
-    suspend fun sendMessage(text: String, cwd: String, model: String, effort: String?) {
+    suspend fun getGoal(threadId: String): GoalInfo? {
+        val response = rpc.request("thread/goal/get", buildJsonObject {
+            put("threadId", threadId)
+        })
+        val goal = response.asObjectOrNull()
+            ?.obj("goal")
+            ?.let(::parseGoal)
+        _state.update { current ->
+            if (goal == null) {
+                current.copy(goalByThread = current.goalByThread - threadId)
+            } else {
+                current.copy(goalByThread = current.goalByThread + (threadId to goal))
+            }
+        }
+        return goal
+    }
+
+    suspend fun setGoal(
+        objective: String? = null,
+        status: String? = null,
+        cwd: String = "",
+        model: String = "",
+        effort: String? = null,
+        mode: String = "default",
+        createThread: Boolean = false,
+    ): String = sendMutex.withLock {
+        val threadId = _state.value.selectedThreadId ?: when {
+            createThread -> startThread(cwd, model, effort, _state.value.selectedPermissionProfile, mode)
+            else -> throw RpcException("Open a thread before managing its goal")
+        }
+        val response = rpc.request("thread/goal/set", buildJsonObject {
+            put("threadId", threadId)
+            put("origin", "user")
+            objective?.takeIf { it.isNotBlank() }?.let { put("objective", it) }
+            status?.takeIf { it.isNotBlank() }?.let { put("status", it) }
+        })
+        val goal = response.asObjectOrNull()
+            ?.obj("goal")
+            ?.let(::parseGoal)
+            ?: throw RpcException("thread/goal/set response did not include a goal")
+        _state.update { current ->
+            current.copy(goalByThread = current.goalByThread + (threadId to goal))
+        }
+        threadId
+    }
+
+    suspend fun clearGoal(threadId: String): Boolean {
+        val response = rpc.request("thread/goal/clear", buildJsonObject {
+            put("threadId", threadId)
+            put("origin", "user")
+        })
+        val cleared = response.asObjectOrNull()?.boolean("cleared") == true
+        if (cleared) {
+            _state.update { it.copy(goalByThread = it.goalByThread - threadId) }
+        }
+        return cleared
+    }
+
+    suspend fun compactThread(threadId: String) {
+        rpc.request("thread/compact/start", buildJsonObject { put("threadId", threadId) })
+    }
+
+    suspend fun listMcpServers(threadId: String?): List<McpServerSummary> {
+        val servers = mutableListOf<McpServerSummary>()
+        var cursor: String? = null
+        do {
+            val params = buildJsonObject {
+                put("limit", 100)
+                if (cursor != null) put("cursor", cursor)
+                if (threadId != null) put("threadId", threadId)
+            }
+            val response = rpc.request("mcpServerStatus/list", params)
+            servers += parseMcpServerSummaries(response)
+            cursor = response.asObjectOrNull()?.string("nextCursor")
+        } while (!cursor.isNullOrBlank())
+        return servers
+    }
+
+    suspend fun startReviewUncommitted(threadId: String) {
+        startReview(threadId, buildJsonObject { put("type", "uncommittedChanges") })
+    }
+
+    suspend fun startReviewBaseBranch(threadId: String, branch: String) {
+        startReview(threadId, buildJsonObject {
+            put("type", "baseBranch")
+            put("branch", branch.trim())
+        })
+    }
+
+    private suspend fun startReview(threadId: String, target: JsonObject) {
+        val response = rpc.request("review/start", buildJsonObject {
+            put("threadId", threadId)
+            put("target", target)
+        })
+        val turn = response.asObjectOrNull()?.obj("turn")
+        val reviewThreadId = response.asObjectOrNull()?.string("reviewThreadId") ?: threadId
+        if (turn != null) {
+            _state.update {
+                it.applyNotification(
+                    RpcNotification(
+                        "turn/started",
+                        buildJsonObject {
+                            put("threadId", reviewThreadId)
+                            put("turn", turn)
+                        },
+                    ),
+                )
+            }
+        }
+    }
+
+    suspend fun readRateLimits(): RateLimitSummary {
+        return parseRateLimitSummary(rpc.request("account/rateLimits/read"))
+    }
+
+    suspend fun readMemorySettings(): MemorySettings {
+        val response = rpc.request("config/read", buildJsonObject {
+            put("includeLayers", false)
+            put("cwd", JsonNull)
+        })
+        return parseMemorySettings(response)
+    }
+
+    suspend fun updateMemorySettings(
+        threadId: String?,
+        useMemories: Boolean,
+        generateMemories: Boolean,
+    ) {
+        rpc.request("config/batchWrite", buildJsonObject {
+            putJsonArray("edits") {
+                add(buildJsonObject {
+                    put("keyPath", "memories.use_memories")
+                    put("value", useMemories)
+                    put("mergeStrategy", "replace")
+                })
+                add(buildJsonObject {
+                    put("keyPath", "memories.generate_memories")
+                    put("value", generateMemories)
+                    put("mergeStrategy", "replace")
+                })
+            }
+        })
+        if (threadId != null) {
+            rpc.request("thread/memoryMode/set", buildJsonObject {
+                put("threadId", threadId)
+                put("mode", if (generateMemories) "enabled" else "disabled")
+            })
+        }
+    }
+
+    suspend fun sendMessage(
+        text: String,
+        cwd: String,
+        model: String,
+        effort: String?,
+        mode: String = "default",
+    ) {
         val message = text.trim()
         if (message.isEmpty()) return
         sendMutex.withLock {
             val current = _state.value
             val permissionProfile = current.selectedPermissionProfile
             val threadId = current.selectedThreadId
-                ?: startThread(cwd, model, effort, permissionProfile)
+                ?: startThread(cwd, model, effort, permissionProfile, mode)
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
 
             if (threadId !in resumedThreads) {
@@ -360,6 +528,7 @@ class AppServerRepository(
                 put("cwd", normalizedCwd)
                 if (model.isNotBlank()) put("model", model)
                 if (!effort.isNullOrBlank()) put("effort", effort)
+                putCollaborationMode(mode, model)
                 putTurnPermissionOptions(permissionProfile, normalizedCwd, effectivePermissionConfig)
             }
             val response = rpc.request("turn/start", params)
@@ -506,6 +675,7 @@ class AppServerRepository(
         model: String,
         effort: String?,
         permissionProfile: PermissionProfile,
+        mode: String = "default",
     ): String {
         val params = buildJsonObject {
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
@@ -514,6 +684,7 @@ class AppServerRepository(
             if (!effort.isNullOrBlank()) {
                 putJsonObject("config") { put("model_reasoning_effort", effort) }
             }
+            if (mode == "plan") putCollaborationMode(mode, model)
             putThreadPermissionOptions(permissionProfile)
             put("serviceName", "codex_web_android")
             put("threadSource", "codex_web_android")
@@ -558,6 +729,17 @@ class AppServerRepository(
         put("sortKey", "recency_at")
         put("sortDirection", "desc")
         put("archived", false)
+    }
+}
+
+internal fun JsonObjectBuilder.putCollaborationMode(mode: String, model: String) {
+    putJsonObject("collaborationMode") {
+        put("mode", if (mode == "plan") "plan" else "default")
+        putJsonObject("settings") {
+            put("model", model)
+            put("reasoning_effort", JsonNull)
+            put("developer_instructions", JsonNull)
+        }
     }
 }
 

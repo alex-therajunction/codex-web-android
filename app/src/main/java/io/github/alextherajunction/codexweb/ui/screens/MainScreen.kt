@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -20,10 +21,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BugReport
@@ -88,6 +91,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.alextherajunction.codexweb.AppUiState
+import io.github.alextherajunction.codexweb.slashCommandSuggestions
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
@@ -98,8 +102,10 @@ import io.github.alextherajunction.codexweb.protocol.TurnInfo
 import io.github.alextherajunction.codexweb.protocol.groupThreadsByProjects
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
 import io.github.alextherajunction.codexweb.ui.components.ChatItemRow
+import io.github.alextherajunction.codexweb.ui.components.ComposerCommandDialog
 import io.github.alextherajunction.codexweb.ui.components.ContextChips
 import io.github.alextherajunction.codexweb.ui.components.DiagnosticsDialog
+import io.github.alextherajunction.codexweb.ui.components.GoalEditDialog
 import io.github.alextherajunction.codexweb.ui.components.GoalSummaryCard
 import io.github.alextherajunction.codexweb.ui.components.NotificationsDialog
 import io.github.alextherajunction.codexweb.ui.components.PendingRequestCard
@@ -145,6 +151,14 @@ fun MainScreen(
     onSelectPushDistributor: (String) -> Unit,
     onPushNotificationsEnabled: (Boolean) -> Unit,
     onRetryPushRegistration: () -> Unit,
+    onDismissGoalEditor: () -> Unit,
+    onSaveGoal: (String) -> Unit,
+    onDismissGoalPrompt: () -> Unit,
+    onDismissComposerPanel: () -> Unit,
+    onPlanModeChange: (Boolean) -> Unit,
+    onStartReviewUncommitted: () -> Unit,
+    onStartReviewBaseBranch: (String) -> Unit,
+    onSaveMemorySettings: (Boolean, Boolean) -> Unit,
     onSignOut: () -> Unit,
     onReconnect: () -> Unit,
 ) {
@@ -411,6 +425,9 @@ fun MainScreen(
                 Box(Modifier.weight(1f)) {
                     Conversation(
                         snapshot = snapshot,
+                        hiddenTurnIds = snapshot.selectedThreadId
+                            ?.let { state.hiddenTurnIdsByThread[it] }
+                            .orEmpty(),
                         loadingEarlierTurns = state.loadingEarlierTurns,
                         onLoadEarlierTurns = onLoadEarlierTurns,
                         modifier = Modifier.fillMaxSize(),
@@ -433,7 +450,11 @@ fun MainScreen(
                     value = state.composerText,
                     sending = state.sending,
                     activeTurnId = activeTurnId,
+                    goalPromptMode = state.goalPromptMode,
+                    planMode = state.planMode,
                     onValueChange = onComposerChange,
+                    onGoalPromptCancel = onDismissGoalPrompt,
+                    onPlanModeChange = onPlanModeChange,
                     onSend = onSend,
                     onInterrupt = onInterrupt,
                 )
@@ -462,6 +483,27 @@ fun MainScreen(
                 showProjectPicker = false
             },
             onDismiss = { showProjectPicker = false },
+        )
+    }
+    if (state.goalEditorOpen) {
+        GoalEditDialog(
+            goal = snapshot.selectedGoal,
+            saving = state.sending,
+            onDismiss = onDismissGoalEditor,
+            onSave = onSaveGoal,
+        )
+    }
+    state.activeComposerPanel?.let { panel ->
+        ComposerCommandDialog(
+            panel = panel,
+            state = state,
+            snapshot = snapshot,
+            onDismiss = onDismissComposerPanel,
+            onModelSelected = onModelSelected,
+            onReasoningEffortSelected = onReasoningEffortSelected,
+            onStartReviewUncommitted = onStartReviewUncommitted,
+            onStartReviewBaseBranch = onStartReviewBaseBranch,
+            onSaveMemorySettings = onSaveMemorySettings,
         )
     }
     if (showDiagnostics) {
@@ -1005,13 +1047,17 @@ private fun ThreadRow(
 @Composable
 private fun Conversation(
     snapshot: AppServerSnapshot,
+    hiddenTurnIds: Set<String>,
     loadingEarlierTurns: Boolean,
     onLoadEarlierTurns: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
-    val rows = remember(snapshot.selectedTurns) {
-        buildConversationRows(snapshot.selectedTurns)
+    val visibleTurns = remember(snapshot.selectedTurns, hiddenTurnIds) {
+        snapshot.selectedTurns.filterNot { it.id in hiddenTurnIds }
+    }
+    val rows = remember(visibleTurns) {
+        buildConversationRows(visibleTurns)
     }
     val hasEarlierTurns = snapshot.selectedThreadId?.let {
         snapshot.earlierTurnsCursorByThread[it] != null
@@ -1155,10 +1201,17 @@ private fun Composer(
     value: String,
     sending: Boolean,
     activeTurnId: String?,
+    goalPromptMode: Boolean,
+    planMode: Boolean,
     onValueChange: (String) -> Unit,
+    onGoalPromptCancel: () -> Unit,
+    onPlanModeChange: (Boolean) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
 ) {
+    val commandSuggestions = remember(value, goalPromptMode) {
+        if (goalPromptMode) emptyList() else slashCommandSuggestions(value)
+    }
     Surface(
         color = Color(0xFF12150F),
         border = BorderStroke(1.dp, CodexOutline.copy(alpha = 0.55f)),
@@ -1167,12 +1220,116 @@ private fun Composer(
             .navigationBarsPadding(),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            if (goalPromptMode) {
+                AssistChip(
+                    onClick = onGoalPromptCancel,
+                    label = { Text("Goal objective") },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "Cancel goal objective",
+                            modifier = Modifier.size(15.dp),
+                        )
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        labelColor = CodexAmber,
+                        trailingIconContentColor = CodexAmber,
+                        containerColor = CodexAmber.copy(alpha = 0.1f),
+                    ),
+                    border = AssistChipDefaults.assistChipBorder(
+                        enabled = true,
+                        borderColor = CodexAmber.copy(alpha = 0.45f),
+                    ),
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            if (planMode) {
+                AssistChip(
+                    onClick = { onPlanModeChange(false) },
+                    label = { Text("Plan mode") },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "Turn off plan mode",
+                            modifier = Modifier.size(15.dp),
+                        )
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        labelColor = CodexLime,
+                        trailingIconContentColor = CodexLime,
+                        containerColor = CodexLime.copy(alpha = 0.1f),
+                    ),
+                    border = AssistChipDefaults.assistChipBorder(
+                        enabled = true,
+                        borderColor = CodexLime.copy(alpha = 0.45f),
+                    ),
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            if (commandSuggestions.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = CodexSurface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, CodexOutline),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 238.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        commandSuggestions.forEachIndexed { index, suggestion ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onValueChange(suggestion.command)
+                                        onSend()
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        suggestion.command,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = CodexLime,
+                                    )
+                                    Text(
+                                        suggestion.description,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = CodexMuted,
+                                    )
+                                }
+                                Text(
+                                    suggestion.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = CodexMuted,
+                                )
+                            }
+                            if (index != commandSuggestions.lastIndex) {
+                                HorizontalDivider(color = CodexOutline.copy(alpha = 0.6f))
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = value,
                     onValueChange = onValueChange,
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message Codex…") },
+                    placeholder = {
+                        Text(
+                            if (goalPromptMode) {
+                                "Describe the goal Codex should pursue…"
+                            } else {
+                                "Message Codex…"
+                            },
+                        )
+                    },
                     minLines = 1,
                     maxLines = 6,
                     shape = RoundedCornerShape(18.dp),

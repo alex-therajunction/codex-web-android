@@ -14,8 +14,11 @@ import io.github.alextherajunction.codexweb.data.normalizeDeploymentUrl
 import io.github.alextherajunction.codexweb.protocol.AppServerRepository
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
+import io.github.alextherajunction.codexweb.protocol.McpServerSummary
+import io.github.alextherajunction.codexweb.protocol.MemorySettings
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
 import io.github.alextherajunction.codexweb.protocol.PermissionProfile
+import io.github.alextherajunction.codexweb.protocol.RateLimitSummary
 import io.github.alextherajunction.codexweb.protocol.RpcException
 import io.github.alextherajunction.codexweb.protocol.ServerDirectory
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
@@ -52,6 +55,7 @@ data class AppUiState(
     val composerText: String = "",
     val composerDraftKey: String = NEW_CHAT_COMPOSER_DRAFT_KEY,
     val composerDrafts: Map<String, String> = emptyMap(),
+    val hiddenTurnIdsByThread: Map<String, Set<String>> = emptyMap(),
     val sending: Boolean = false,
     val openingThreadId: String? = null,
     val loadingEarlierTurns: Boolean = false,
@@ -62,6 +66,14 @@ data class AppUiState(
     val projectBrowserDirectories: List<ServerDirectory> = emptyList(),
     val projectBrowserLoading: Boolean = false,
     val projectBrowserError: String? = null,
+    val goalEditorOpen: Boolean = false,
+    val goalPromptMode: Boolean = false,
+    val planMode: Boolean = false,
+    val activeComposerPanel: ComposerPanel? = null,
+    val composerPanelLoading: Boolean = false,
+    val mcpServers: List<McpServerSummary> = emptyList(),
+    val rateLimits: RateLimitSummary? = null,
+    val memorySettings: MemorySettings? = null,
     val pushEnabled: Boolean = false,
     val pushDistributors: List<PushDistributor> = emptyList(),
     val pushSelectedDistributor: String? = null,
@@ -225,7 +237,14 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     fun newChatInProject(path: String) {
         repository?.startNewChat()
         selectProject(path)
-        _state.update { it.withThreadComposerDraft(null).copy(error = null) }
+        _state.update {
+            it.withThreadComposerDraft(null).copy(
+                error = null,
+                goalPromptMode = false,
+                activeComposerPanel = null,
+                composerPanelLoading = false,
+            )
+        }
     }
 
     fun updateModel(modelId: String) {
@@ -336,7 +355,13 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         val repo = repository ?: return
         if (_state.value.snapshot.selectedThreadId == threadId) return
         _state.update {
-            it.copy(openingThreadId = threadId, error = null)
+            it.copy(
+                openingThreadId = threadId,
+                error = null,
+                goalPromptMode = false,
+                activeComposerPanel = null,
+                composerPanelLoading = false,
+            )
                 .withThreadComposerDraft(threadId)
         }
         viewModelScope.launch {
@@ -355,7 +380,14 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     fun newChat() {
         repository?.startNewChat()
-        _state.update { it.withThreadComposerDraft(null).copy(error = null) }
+        _state.update {
+            it.withThreadComposerDraft(null).copy(
+                error = null,
+                goalPromptMode = false,
+                activeComposerPanel = null,
+                composerPanelLoading = false,
+            )
+        }
     }
 
     fun refreshThreads() {
@@ -435,27 +467,354 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
             _state.update { it.copy(error = "Connection lost. Reconnecting to app-server…") }
             return
         }
-        if (snapshot.selectedActiveTurnId != null) return
+        val isGoalPrompt = current.goalPromptMode
+        val command = if (isGoalPrompt) null else parseComposerCommand(text)
+        val commandCanRunDuringTurn = when (command) {
+            ComposerCommand.GoalPrompt,
+            is ComposerCommand.GoalSet,
+            ComposerCommand.GoalPause,
+            ComposerCommand.GoalResume,
+            ComposerCommand.GoalClear,
+            ComposerCommand.GoalEdit,
+            -> true
+            else -> false
+        }
+        if (snapshot.selectedActiveTurnId != null && (isGoalPrompt || !commandCanRunDuringTurn)) return
         val cwd = _state.value.cwdInput.ifBlank { snapshot.workspaceCwd }
-        if (cwd.isBlank()) {
+        if (!isGoalPrompt && command == null && cwd.isBlank()) {
             _state.update { it.copy(error = "Working directory is required") }
             return
         }
+        if (
+            (isGoalPrompt || command is ComposerCommand.GoalSet) &&
+            snapshot.selectedThreadId == null &&
+            cwd.isBlank()
+        ) {
+            _state.update { it.copy(error = "Working directory is required to start a goal") }
+            return
+        }
+        val collaborationMode = if (current.planMode) "plan" else "default"
         _state.update { it.copy(sending = true, error = null) }
         viewModelScope.launch {
             try {
-                repo.sendMessage(
-                    text = text,
-                    cwd = cwd,
-                    model = snapshot.selectedModelId,
-                    effort = snapshot.selectedReasoningEffort,
-                )
-                _state.update { it.afterComposerSend(originDraftKey, submittedDraft) }
+                if (isGoalPrompt) {
+                    repo.setGoal(
+                        objective = text,
+                        status = "active",
+                        cwd = cwd,
+                        model = snapshot.selectedModelId,
+                        effort = snapshot.selectedReasoningEffort,
+                        mode = collaborationMode,
+                        createThread = true,
+                    )
+                } else when (command) {
+                    null -> repo.sendMessage(
+                        text = text,
+                        cwd = cwd,
+                        model = snapshot.selectedModelId,
+                        effort = snapshot.selectedReasoningEffort,
+                        mode = collaborationMode,
+                    )
+                    ComposerCommand.GoalPrompt -> {
+                        _state.update { it.copy(goalPromptMode = true) }
+                    }
+                    is ComposerCommand.GoalSet -> repo.setGoal(
+                        objective = command.objective,
+                        status = "active",
+                        cwd = cwd,
+                        model = snapshot.selectedModelId,
+                        effort = snapshot.selectedReasoningEffort,
+                        mode = collaborationMode,
+                        createThread = true,
+                    )
+                    ComposerCommand.GoalPause -> {
+                        val threadId = snapshot.selectedThreadId
+                            ?: throw RpcException("Open a thread before pausing its goal")
+                        repo.setGoal(status = "paused", mode = collaborationMode)
+                        snapshot.selectedActiveTurnId?.let { turnId ->
+                            repo.interrupt(threadId, turnId)
+                        }
+                    }
+                    ComposerCommand.GoalResume -> {
+                        if (snapshot.selectedThreadId == null) {
+                            throw RpcException("Open a thread before resuming its goal")
+                        }
+                        repo.setGoal(status = "active", mode = collaborationMode)
+                    }
+                    ComposerCommand.GoalClear -> {
+                        val threadId = snapshot.selectedThreadId
+                            ?: throw RpcException("Open a thread before clearing its goal")
+                        if (!repo.clearGoal(threadId)) {
+                            throw RpcException("No goal to clear")
+                        }
+                    }
+                    ComposerCommand.GoalEdit -> {
+                        val threadId = snapshot.selectedThreadId
+                            ?: throw RpcException("No goal set. Use /goal <objective> to start one.")
+                        if (repo.getGoal(threadId) == null) {
+                            throw RpcException("No goal set. Use /goal <objective> to start one.")
+                        }
+                        _state.update { it.copy(goalEditorOpen = true) }
+                    }
+                    ComposerCommand.Plan -> {
+                        _state.update { it.copy(planMode = true, goalPromptMode = false) }
+                    }
+                    ComposerCommand.Compact -> {
+                        val threadId = snapshot.selectedThreadId
+                            ?: throw RpcException("Start a conversation before compacting context")
+                        repo.compactThread(threadId)
+                    }
+                    ComposerCommand.Mcp -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.MCP,
+                                composerPanelLoading = true,
+                            )
+                        }
+                        loadMcpServers(repo)
+                    }
+                    ComposerCommand.Review -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.REVIEW,
+                                composerPanelLoading = false,
+                            )
+                        }
+                    }
+                    ComposerCommand.Reasoning -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.REASONING,
+                                composerPanelLoading = false,
+                            )
+                        }
+                    }
+                    ComposerCommand.Model -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.MODEL,
+                                composerPanelLoading = false,
+                            )
+                        }
+                    }
+                    ComposerCommand.Status -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.STATUS,
+                                composerPanelLoading = true,
+                            )
+                        }
+                        loadRateLimits(repo)
+                    }
+                    ComposerCommand.Memories -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.MEMORY,
+                                composerPanelLoading = true,
+                            )
+                        }
+                        loadMemorySettings(repo)
+                    }
+                    ComposerCommand.Help -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.HELP,
+                                composerPanelLoading = false,
+                            )
+                        }
+                    }
+                    ComposerCommand.Clear -> {
+                        val threadId = snapshot.selectedThreadId
+                        if (threadId != null) {
+                            val turnIds = snapshot.selectedTurns.mapTo(mutableSetOf()) { it.id }
+                            _state.update {
+                                val hidden = it.hiddenTurnIdsByThread[threadId].orEmpty() + turnIds
+                                it.copy(
+                                    hiddenTurnIdsByThread = it.hiddenTurnIdsByThread +
+                                        (threadId to hidden),
+                                )
+                            }
+                        }
+                    }
+                    ComposerCommand.Cost -> {
+                        _state.update {
+                            it.copy(
+                                activeComposerPanel = ComposerPanel.COST,
+                                composerPanelLoading = false,
+                            )
+                        }
+                    }
+                }
+                _state.update {
+                    it.afterComposerSend(originDraftKey, submittedDraft)
+                        .copy(goalPromptMode = command == ComposerCommand.GoalPrompt)
+                }
                 runCatching { repo.refreshThreads() }
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not send message") }
             } finally {
                 _state.update { it.copy(sending = false) }
+            }
+        }
+    }
+
+    fun dismissGoalEditor() {
+        _state.update { it.copy(goalEditorOpen = false) }
+    }
+
+    fun updateGoalObjective(objective: String) {
+        val repo = repository ?: return
+        val current = _state.value
+        val snapshot = current.snapshot
+        val threadId = snapshot.selectedThreadId ?: return
+        val goal = snapshot.selectedGoal ?: return
+        val updatedObjective = objective.trim()
+        if (updatedObjective.isBlank() || current.sending) return
+        _state.update { it.copy(sending = true, error = null) }
+        viewModelScope.launch {
+            try {
+                repo.setGoal(
+                    objective = updatedObjective,
+                    status = editedGoalStatus(goal.status),
+                    cwd = _state.value.cwdInput.ifBlank { snapshot.workspaceCwd },
+                    model = snapshot.selectedModelId,
+                    effort = snapshot.selectedReasoningEffort,
+                    mode = if (current.planMode) "plan" else "default",
+                )
+                _state.update { it.copy(goalEditorOpen = false) }
+            } catch (error: Exception) {
+                _state.update { it.copy(error = error.message ?: "Could not update goal") }
+            } finally {
+                _state.update { it.copy(sending = false) }
+            }
+        }
+    }
+
+    fun dismissComposerPanel() {
+        _state.update { it.copy(activeComposerPanel = null, composerPanelLoading = false) }
+    }
+
+    fun dismissGoalPrompt() {
+        _state.update { it.copy(goalPromptMode = false) }
+    }
+
+    fun setPlanMode(enabled: Boolean) {
+        _state.update { it.copy(planMode = enabled) }
+    }
+
+    fun startReviewUncommitted() {
+        runReview { repo, threadId -> repo.startReviewUncommitted(threadId) }
+    }
+
+    fun startReviewBaseBranch(branch: String) {
+        val trimmed = branch.trim()
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(error = "Enter a base branch to compare against") }
+            return
+        }
+        runReview { repo, threadId -> repo.startReviewBaseBranch(threadId, trimmed) }
+    }
+
+    fun saveMemorySettings(useMemories: Boolean, generateMemories: Boolean) {
+        val repo = repository ?: return
+        val threadId = _state.value.snapshot.selectedThreadId
+        if (_state.value.composerPanelLoading) return
+        _state.update { it.copy(composerPanelLoading = true, error = null) }
+        viewModelScope.launch {
+            try {
+                repo.updateMemorySettings(threadId, useMemories, generateMemories)
+                _state.update {
+                    it.copy(
+                        activeComposerPanel = null,
+                        composerPanelLoading = false,
+                        memorySettings = MemorySettings(useMemories, generateMemories),
+                    )
+                }
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        composerPanelLoading = false,
+                        error = error.message ?: "Could not update memory settings",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun runReview(start: suspend (AppServerRepository, String) -> Unit) {
+        val repo = repository ?: return
+        val threadId = _state.value.snapshot.selectedThreadId
+        if (threadId == null) {
+            _state.update { it.copy(error = "Start a conversation before reviewing changes") }
+            return
+        }
+        if (_state.value.composerPanelLoading) return
+        _state.update { it.copy(composerPanelLoading = true, error = null) }
+        viewModelScope.launch {
+            try {
+                start(repo, threadId)
+                _state.update {
+                    it.copy(activeComposerPanel = null, composerPanelLoading = false)
+                }
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        composerPanelLoading = false,
+                        error = error.message ?: "Could not start review",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadMcpServers(repo: AppServerRepository) {
+        viewModelScope.launch {
+            try {
+                val servers = repo.listMcpServers(_state.value.snapshot.selectedThreadId)
+                _state.update { it.copy(mcpServers = servers, composerPanelLoading = false) }
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        composerPanelLoading = false,
+                        error = error.message ?: "Could not load MCP servers",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadRateLimits(repo: AppServerRepository) {
+        viewModelScope.launch {
+            try {
+                val limits = repo.readRateLimits()
+                _state.update { it.copy(rateLimits = limits, composerPanelLoading = false) }
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        rateLimits = null,
+                        composerPanelLoading = false,
+                        error = error.message ?: "Could not load rate limits",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadMemorySettings(repo: AppServerRepository) {
+        viewModelScope.launch {
+            try {
+                val settings = repo.readMemorySettings()
+                _state.update {
+                    it.copy(memorySettings = settings, composerPanelLoading = false)
+                }
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        memorySettings = it.memorySettings ?: MemorySettings(),
+                        composerPanelLoading = false,
+                        error = error.message ?: "Could not load memory settings",
+                    )
+                }
             }
         }
     }

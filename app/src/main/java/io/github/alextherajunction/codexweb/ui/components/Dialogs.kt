@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.alextherajunction.codexweb.protocol.Diagnostic
+import io.github.alextherajunction.codexweb.protocol.GoalInfo
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
 import io.github.alextherajunction.codexweb.protocol.array
 import io.github.alextherajunction.codexweb.protocol.asObjectOrNull
@@ -93,6 +94,42 @@ fun WorkingDirectoryDialog(
             ) { Text("Use path") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+fun GoalEditDialog(
+    goal: GoalInfo?,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var value by remember(goal?.objective) { mutableStateOf(goal?.objective.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit goal") },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Objective") },
+                minLines = 3,
+                maxLines = 8,
+                enabled = !saving,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(value) },
+                enabled = !saving && value.isNotBlank(),
+            ) {
+                Text(if (saving) "Saving…" else "Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel") }
+        },
     )
 }
 
