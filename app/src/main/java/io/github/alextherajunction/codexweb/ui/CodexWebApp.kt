@@ -75,6 +75,10 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onAnswerUserInput = viewModel::answerUserInput,
                 onCancelMcp = viewModel::cancelMcpRequest,
                 onRejectUnsupported = viewModel::rejectUnsupportedRequest,
+                onRefreshPushDistributors = viewModel::refreshPushDistributors,
+                onSelectPushDistributor = viewModel::selectPushDistributor,
+                onPushNotificationsEnabled = viewModel::setPushNotificationsEnabled,
+                onRetryPushRegistration = viewModel::retryPushRegistration,
                 onSignOut = viewModel::signOut,
                 onReconnect = viewModel::retryConnection,
             )

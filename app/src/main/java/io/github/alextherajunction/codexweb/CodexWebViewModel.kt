@@ -1,6 +1,7 @@
 package io.github.alextherajunction.codexweb
 
 import android.app.Application
+import android.content.Intent
 import android.webkit.CookieManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,10 @@ import io.github.alextherajunction.codexweb.protocol.PendingRequest
 import io.github.alextherajunction.codexweb.protocol.RpcException
 import io.github.alextherajunction.codexweb.protocol.ServerDirectory
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
+import io.github.alextherajunction.codexweb.push.PushDistributor
+import io.github.alextherajunction.codexweb.push.PushDistributors
+import io.github.alextherajunction.codexweb.push.PushNotifier
+import io.github.alextherajunction.codexweb.push.PushRegistrationClient
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
@@ -54,6 +59,11 @@ data class AppUiState(
     val projectBrowserDirectories: List<ServerDirectory> = emptyList(),
     val projectBrowserLoading: Boolean = false,
     val projectBrowserError: String? = null,
+    val pushEnabled: Boolean = false,
+    val pushDistributors: List<PushDistributor> = emptyList(),
+    val pushSelectedDistributor: String? = null,
+    val pushStatus: String? = null,
+    val pushError: String? = null,
     val snapshot: AppServerSnapshot = AppServerSnapshot(),
 )
 
@@ -71,6 +81,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         AppUiState(
             urlInput = preferences.deploymentUrl.orEmpty(),
             cwdInput = preferences.lastProjectPath.orEmpty(),
+            pushEnabled = preferences.notificationsEnabled,
+            pushSelectedDistributor = preferences.pushDistributor,
+            pushStatus = preferences.pushStatus,
+            pushError = preferences.pushError,
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -80,8 +94,15 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     private var reconnectJob: Job? = null
     private var connecting = false
     private var checkingLoginCookie = false
+    private var pendingNotificationThreadId: String? = null
+    private val pushPreferenceListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            syncPushPreferenceState()
+        }
 
     init {
+        preferences.registerChangeListener(pushPreferenceListener)
+        refreshPushDistributors()
         val savedUrl = preferences.deploymentUrl?.trim().orEmpty()
         if (savedUrl.isNotBlank()) {
             val cookie = cookieFor(savedUrl)
@@ -101,6 +122,80 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     fun updateComposer(value: String) {
         _state.update { it.copy(composerText = value) }
+    }
+
+    fun handleNotificationIntent(intent: Intent?) {
+        pendingNotificationThreadId = intent?.getStringExtra(PushNotifier.EXTRA_THREAD_ID)
+            ?.takeIf { it.isNotBlank() }
+        openPendingNotificationThread()
+    }
+
+    fun refreshPushDistributors() {
+        val distributors = PushDistributors.available(getApplication())
+        val stored = preferences.pushDistributor
+        val selected = stored?.takeIf { candidate -> distributors.any { it.packageName == candidate } }
+            ?: PushDistributors.current(getApplication())
+                ?.takeIf { candidate -> distributors.any { it.packageName == candidate } }
+            ?: distributors.firstOrNull()?.packageName
+        _state.update {
+            it.copy(
+                pushDistributors = distributors,
+                pushSelectedDistributor = selected,
+            )
+        }
+    }
+
+    fun selectPushDistributor(packageName: String) {
+        if (_state.value.pushDistributors.none { it.packageName == packageName }) return
+        preferences.pushDistributor = packageName
+        _state.update { it.copy(pushSelectedDistributor = packageName, pushError = null) }
+        if (preferences.notificationsEnabled) registerPushNotifications()
+    }
+
+    fun setPushNotificationsEnabled(enabled: Boolean) {
+        if (!enabled) {
+            val instance = PushDistributors.ensureInstance(getApplication())
+            preferences.notificationsEnabled = false
+            preferences.pushStatus = null
+            preferences.pushError = null
+            _state.update { it.copy(pushEnabled = false, pushStatus = null, pushError = null) }
+            runCatching { PushDistributors.unregister(getApplication(), instance) }
+            viewModelScope.launch {
+                runCatching { PushRegistrationClient.unregister(getApplication(), instance) }
+            }
+            return
+        }
+
+        val selected = _state.value.pushSelectedDistributor
+            ?: _state.value.pushDistributors.firstOrNull()?.packageName
+        if (selected == null) {
+            _state.update {
+                it.copy(pushError = "Install a UnifiedPush distributor such as Sunup or ntfy first.")
+            }
+            return
+        }
+        preferences.notificationsEnabled = true
+        preferences.pushDistributor = selected
+        preferences.pushStatus = "Waiting for the UnifiedPush distributor…"
+        preferences.pushError = null
+        _state.update {
+            it.copy(
+                pushEnabled = true,
+                pushSelectedDistributor = selected,
+                pushStatus = preferences.pushStatus,
+                pushError = null,
+            )
+        }
+        registerPushNotifications()
+    }
+
+    fun retryPushRegistration() {
+        refreshPushDistributors()
+        if (!preferences.notificationsEnabled) {
+            _state.update { it.copy(pushError = "Enable notifications first.") }
+            return
+        }
+        registerPushNotifications()
     }
 
     fun updateCwd(value: String) {
@@ -405,12 +500,18 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     fun signOut() {
         val url = _state.value.urlInput
         val cookie = cookieFor(url)
+        val pushInstance = PushDistributors.ensureInstance(getApplication())
         reconnectJob?.cancel()
         reconnectJob = null
         repositoryCollector?.cancel()
         repository?.close()
         repository = null
+        runCatching { PushDistributors.unregister(getApplication(), pushInstance) }
+        preferences.notificationsEnabled = false
+        preferences.pushStatus = null
+        preferences.pushError = null
         viewModelScope.launch {
+            runCatching { PushRegistrationClient.unregister(getApplication(), pushInstance, cookie) }
             runCatching { gateway.logout(url, cookie) }
         }
         CookieManager.getInstance().apply {
@@ -422,6 +523,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
             urlInput = url,
             cwdInput = "",
         )
+        refreshPushDistributors()
     }
 
     fun discardWebViewCookies() {
@@ -435,6 +537,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         reconnectJob?.cancel()
         repositoryCollector?.cancel()
         repository?.close()
+        preferences.unregisterChangeListener(pushPreferenceListener)
         httpClient.dispatcher.executorService.shutdown()
         httpClient.connectionPool.evictAll()
         super.onCleared()
@@ -514,6 +617,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                         cwdInput = it.cwdInput.ifBlank { session.user.cwd.ifBlank { session.homeDirectory } },
                     )
                 }
+                if (preferences.notificationsEnabled) registerPushNotifications()
+                openPendingNotificationThread()
             } catch (error: SessionExpiredException) {
                 _state.update {
                     it.copy(
@@ -578,6 +683,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                             error = null,
                         )
                     }
+                    if (preferences.notificationsEnabled) registerPushNotifications()
                     return@launch
                 } catch (error: CancellationException) {
                     throw error
@@ -607,11 +713,58 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
             removeAllCookies(null)
             flush()
         }
-        _state.value = AppUiState(
-            phase = AppPhase.SIGNED_OUT,
-            urlInput = url.trim(),
-            error = message,
-        )
+        _state.update {
+            it.copy(
+                phase = AppPhase.SIGNED_OUT,
+                urlInput = url.trim(),
+                error = message,
+            )
+        }
+    }
+
+    private fun registerPushNotifications() {
+        val packageName = preferences.pushDistributor
+            ?: _state.value.pushSelectedDistributor
+            ?: _state.value.pushDistributors.firstOrNull()?.packageName
+        if (packageName == null) {
+            preferences.pushError = "Install a UnifiedPush distributor such as Sunup or ntfy first."
+            syncPushPreferenceState()
+            return
+        }
+        preferences.pushDistributor = packageName
+        preferences.pushStatus = "Waiting for the UnifiedPush distributor…"
+        preferences.pushError = null
+        syncPushPreferenceState()
+        runCatching {
+            PushDistributors.save(getApplication(), packageName)
+            PushDistributors.register(
+                getApplication(),
+                PushDistributors.ensureInstance(getApplication()),
+                preferences.pushVapidPublicKey,
+            )
+        }.onFailure { error ->
+            preferences.pushStatus = null
+            preferences.pushError = error.message ?: "Could not start UnifiedPush registration"
+            syncPushPreferenceState()
+        }
+    }
+
+    private fun syncPushPreferenceState() {
+        _state.update {
+            it.copy(
+                pushEnabled = preferences.notificationsEnabled,
+                pushSelectedDistributor = preferences.pushDistributor ?: it.pushSelectedDistributor,
+                pushStatus = preferences.pushStatus,
+                pushError = preferences.pushError,
+            )
+        }
+    }
+
+    private fun openPendingNotificationThread() {
+        val threadId = pendingNotificationThreadId ?: return
+        if (_state.value.phase != AppPhase.READY || repository == null) return
+        pendingNotificationThreadId = null
+        selectThread(threadId)
     }
 
     private fun cookieFor(url: String): String? {

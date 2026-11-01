@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Stop
@@ -92,6 +93,7 @@ import io.github.alextherajunction.codexweb.ui.components.ChatItemRow
 import io.github.alextherajunction.codexweb.ui.components.ContextChips
 import io.github.alextherajunction.codexweb.ui.components.DiagnosticsDialog
 import io.github.alextherajunction.codexweb.ui.components.GoalSummaryCard
+import io.github.alextherajunction.codexweb.ui.components.NotificationsDialog
 import io.github.alextherajunction.codexweb.ui.components.PendingRequestCard
 import io.github.alextherajunction.codexweb.ui.components.PlanSummaryCard
 import io.github.alextherajunction.codexweb.ui.components.ProjectPickerDialog
@@ -129,6 +131,10 @@ fun MainScreen(
     onAnswerUserInput: (PendingRequest, Map<String, List<String>>) -> Unit,
     onCancelMcp: (PendingRequest) -> Unit,
     onRejectUnsupported: (PendingRequest) -> Unit,
+    onRefreshPushDistributors: () -> Unit,
+    onSelectPushDistributor: (String) -> Unit,
+    onPushNotificationsEnabled: (Boolean) -> Unit,
+    onRetryPushRegistration: () -> Unit,
     onSignOut: () -> Unit,
     onReconnect: () -> Unit,
 ) {
@@ -140,7 +146,12 @@ fun MainScreen(
     var showCwdDialog by remember { mutableStateOf(false) }
     var showProjectPicker by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+    var showNotifications by remember { mutableStateOf(false) }
     var userInputRequest by remember { mutableStateOf<PendingRequest?>(null) }
+
+    LaunchedEffect(showNotifications) {
+        if (showNotifications) onRefreshPushDistributors()
+    }
 
     val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
     val selectedEffort = snapshot.selectedReasoningEffort
@@ -340,6 +351,14 @@ fun MainScreen(
                                     },
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Notifications") },
+                                    leadingIcon = { Icon(Icons.Rounded.Notifications, null) },
+                                    onClick = {
+                                        showOverflow = false
+                                        showNotifications = true
+                                    },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Diagnostics (${snapshot.diagnostics.size})") },
                                     leadingIcon = { Icon(Icons.Rounded.BugReport, null) },
                                     onClick = {
@@ -457,6 +476,19 @@ fun MainScreen(
         DiagnosticsDialog(
             diagnostics = snapshot.diagnostics,
             onDismiss = { showDiagnostics = false },
+        )
+    }
+    if (showNotifications) {
+        NotificationsDialog(
+            enabled = state.pushEnabled,
+            distributors = state.pushDistributors,
+            selectedDistributor = state.pushSelectedDistributor,
+            status = state.pushStatus,
+            error = state.pushError,
+            onDismiss = { showNotifications = false },
+            onSelectDistributor = onSelectPushDistributor,
+            onEnabledChange = onPushNotificationsEnabled,
+            onRetry = onRetryPushRegistration,
         )
     }
     userInputRequest?.let { request ->

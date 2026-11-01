@@ -24,6 +24,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Plan, goal, token usage, account, and connection state from app-server notifications.
 - Command terminal input from `item/commandExecution/terminalInteraction` and deprecation notices as sourced diagnostics.
 - Unknown notifications and malformed bridge messages are kept in a native diagnostics panel.
+- UnifiedPush notifications for completed or failed Turns, completed goals, approvals, and user-input prompts.
 - Self-signed APK releases from GitHub Actions.
 
 ## Connection flow
@@ -49,6 +50,17 @@ The Android app resolves the session with `GET /api/auth/me` and `GET /api/codex
 - A reachable Codex Web deployment with `CODEX_WEB_BRIDGE_URL` configured.
 - The deployment must expose a `ws://` or `wss://` URL that is reachable from the Android device. A bridge URL pointing at the server's `127.0.0.1` is not reachable from a phone.
 - HTTPS is recommended. HTTP is permitted for trusted LAN deployments.
+- A UnifiedPush distributor such as Sunup or ntfy to receive background notifications.
+
+## Notifications
+
+Open **More → Notifications** in the app, choose an installed UnifiedPush distributor, and enable notifications. Android 13 and newer also require the system notification permission. If notifications are disabled at the OS level, the dialog links to the app's notification settings.
+
+The app registers its endpoint with the connected Codex Web deployment over the authenticated bridge. Codex Web decides which events are notification-worthy; the app only renders validated payloads. It notifies for completed or failed Turns, achieved goals, command/file/permission approvals, and user-input questions, but not ordinary messages or streaming text.
+
+Each app installation uses a separate UnifiedPush instance ID, so multiple Android devices can subscribe to the same Codex Web account. Signing out unregisters the device locally and asks Codex Web to remove its endpoint. If an endpoint becomes stale, Codex Web removes it after the push service reports `404` or `410`.
+
+The app stores only the selected distributor package, its local UnifiedPush instance ID, registration status, and the public VAPID key. The encrypted endpoint and Web Push encryption keys are stored by Codex Web, not in Android preferences.
 
 ## Install
 
@@ -117,7 +129,7 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 
 ## Security notes
 
-- The app persists only the deployment URL, last selected server-provided model ID, and last selected server project path. Project paths are not credentials and remain server-side state.
+- The app persists the deployment URL, last selected server-provided model ID, last selected server project path, UnifiedPush distributor/instance/status settings, and the public VAPID key. Project paths and push metadata are not Codex credentials; the push endpoint and encryption keys remain server-side.
 - WebView cookies are managed by Android's WebView cookie store, not copied into app preferences or logs.
 - WebView file/content access is disabled and mixed content is rejected.
 - SSL certificate errors are not bypassed. Use a trusted certificate for HTTPS deployments.
@@ -129,6 +141,7 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 
 - `app/src/main/java/.../data/`: deployment URL validation, authenticated HTTP discovery, preferences.
 - `app/src/main/java/.../protocol/`: JSON-RPC transport, app-server models/reducer, request responses.
+- `app/src/main/java/.../push/`: UnifiedPush registration, bridge subscription requests, payload validation, and notification rendering.
 - `app/src/main/java/.../ui/`: Compose screens, chat rendering, approval and diagnostics surfaces.
 - `app/src/test/`: reducer, project grouping/path browsing, URL/session, and exact approval response tests.
 - `docs/handover/`: implementation handover and protocol notes.
