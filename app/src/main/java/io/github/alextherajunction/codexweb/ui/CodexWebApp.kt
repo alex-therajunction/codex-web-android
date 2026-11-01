@@ -23,6 +23,7 @@ import io.github.alextherajunction.codexweb.protocol.PendingRequest
 import io.github.alextherajunction.codexweb.ui.screens.AuthWebViewScreen
 import io.github.alextherajunction.codexweb.ui.screens.MainScreen
 import io.github.alextherajunction.codexweb.ui.screens.SetupScreen
+import io.github.alextherajunction.codexweb.ui.screens.TerminalScreen
 import io.github.alextherajunction.codexweb.ui.theme.CodexInk
 
 @Composable
@@ -56,7 +57,14 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onClearCookies = viewModel::discardWebViewCookies,
             )
             AppPhase.CONNECTING -> ConnectingScreen(state)
-            AppPhase.READY -> MainScreen(
+            AppPhase.READY -> state.terminal?.let { terminal ->
+                TerminalScreen(
+                    terminal = terminal,
+                    onClose = viewModel::closeTerminal,
+                    onRestart = viewModel::restartTerminal,
+                    onSendInput = viewModel::sendTerminalInput,
+                )
+            } ?: MainScreen(
                 state = state,
                 onThreadSelected = viewModel::selectThread,
                 onNewChat = viewModel::newChat,
@@ -70,6 +78,7 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onPermissionSelected = viewModel::updatePermissionProfile,
                 onComposerChange = viewModel::updateComposer,
                 onSend = viewModel::sendMessage,
+                onOpenTerminal = viewModel::openTerminal,
                 onInterrupt = viewModel::interrupt,
                 onCwdChange = viewModel::updateCwd,
                 onApprove = viewModel::approve,

@@ -37,7 +37,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
 
       - name: Resolve version
         id: version
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "${APK}"
-          "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose --print-certs "${APK}"
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose --print-certs "${APK}"
           mkdir -p dist
           OUT_NAME="codex-web-android-${{ steps.version.outputs.name }}.apk"
           cp "${APK}" "dist/${OUT_NAME}"

@@ -81,6 +81,10 @@ class CodexRpcClient(
     @Volatile
     private var opened = false
 
+    @Volatile
+    var platformFamily: String = "unix"
+        private set
+
     val isConnected: Boolean
         get() = opened && socket != null
 
@@ -160,7 +164,7 @@ class CodexRpcClient(
                     }
                 }
 
-                withTimeout(25_000) {
+                val initializeResponse = withTimeout(25_000) {
                     request("initialize", buildJsonObject {
                         put("clientInfo", buildJsonObject {
                             put("name", "codex_web_android")
@@ -174,6 +178,10 @@ class CodexRpcClient(
                         })
                     })
                 }
+                platformFamily = initializeResponse.asObjectOrNull()
+                    ?.string("platformFamily")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "unix"
                 notify("initialized")
             } catch (error: Exception) {
                 val failedSocket = connectingSocket

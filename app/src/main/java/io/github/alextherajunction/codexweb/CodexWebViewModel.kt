@@ -2,7 +2,10 @@ package io.github.alextherajunction.codexweb
 
 import android.app.Application
 import android.content.Intent
+import android.os.Looper
 import android.webkit.CookieManager
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.alextherajunction.codexweb.data.AppPreferences
@@ -21,15 +24,21 @@ import io.github.alextherajunction.codexweb.protocol.PermissionProfile
 import io.github.alextherajunction.codexweb.protocol.RateLimitSummary
 import io.github.alextherajunction.codexweb.protocol.RpcException
 import io.github.alextherajunction.codexweb.protocol.ServerDirectory
+import io.github.alextherajunction.codexweb.protocol.TerminalProcessEvent
+import io.github.alextherajunction.codexweb.protocol.TerminalSize
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
 import io.github.alextherajunction.codexweb.push.PushDistributor
 import io.github.alextherajunction.codexweb.push.PushDistributors
 import io.github.alextherajunction.codexweb.push.PushNotifier
 import io.github.alextherajunction.codexweb.push.PushRegistrationClient
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +47,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
+import org.connectbot.terminal.TerminalEmulator
+import org.connectbot.terminal.TerminalEmulatorFactory
 
 enum class AppPhase {
     STARTUP,
@@ -79,7 +90,46 @@ data class AppUiState(
     val pushSelectedDistributor: String? = null,
     val pushStatus: String? = null,
     val pushError: String? = null,
+    val terminal: TerminalUiState? = null,
     val snapshot: AppServerSnapshot = AppServerSnapshot(),
+)
+
+enum class TerminalStatus {
+    STARTING,
+    RUNNING,
+    EXITED,
+    ERROR,
+}
+
+data class TerminalUiState(
+    val processHandle: String,
+    val cwd: String,
+    val emulator: TerminalEmulator,
+    val status: TerminalStatus,
+    val exitCode: Int? = null,
+    val error: String? = null,
+)
+
+private const val MAX_TERMINAL_INPUT_BUFFER = 64 * 1024
+private val TERMINAL_BACKGROUND = Color(0xFF10120E)
+private val TERMINAL_FOREGROUND = Color(0xFFF0F3EA)
+private val TERMINAL_ANSI_COLORS = intArrayOf(
+    0xFF30343B.toInt(),
+    0xFFE06C75.toInt(),
+    0xFF98C379.toInt(),
+    0xFFE5C07B.toInt(),
+    0xFF61AFEF.toInt(),
+    0xFFC678DD.toInt(),
+    0xFF56B6C2.toInt(),
+    0xFFD9DDE3.toInt(),
+    0xFF6F7782.toInt(),
+    0xFFFF8F82.toInt(),
+    0xFFB9F47A.toInt(),
+    0xFFF2C66D.toInt(),
+    0xFF7DCFFF.toInt(),
+    0xFFD7A6FF.toInt(),
+    0xFF89DDFF.toInt(),
+    0xFFFFFFFF.toInt(),
 )
 
 class CodexWebViewModel(application: Application) : AndroidViewModel(application) {
@@ -110,6 +160,16 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     private var connecting = false
     private var checkingLoginCookie = false
     private var pendingNotificationThreadId: String? = null
+    private var terminalEmulator: TerminalEmulator? = null
+    private var terminalUnsubscribe: (() -> Unit)? = null
+    private var terminalInputJob: Job? = null
+    private var terminalOutputJob: Job? = null
+    private var terminalResizeJob: Job? = null
+    private var terminalInputChannel: Channel<ByteArray>? = null
+    private var terminalResizeChannel: Channel<TerminalSize>? = null
+    private val terminalInputBuffer = ByteArrayOutputStream()
+    private val terminalOutputChannel = Channel<ByteArray>(Channel.UNLIMITED)
+    private var terminalSize = TerminalSize()
     private val pushPreferenceListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             syncPushPreferenceState()
@@ -218,6 +278,216 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         preferences.lastProjectPath = normalized
         repository?.updateWorkspaceCwd(normalized)
         _state.update { it.copy(cwdInput = normalized) }
+    }
+
+    fun openTerminal() {
+        val repo = repository ?: return
+        val snapshot = _state.value.snapshot
+        if (snapshot.connection != "connected") {
+            _state.update { it.copy(error = "Reconnect the app-server before opening a terminal") }
+            return
+        }
+        val cwd = normalizeProjectPath(
+            snapshot.selectedThread?.cwd
+                ?: _state.value.cwdInput.ifBlank { snapshot.workspaceCwd },
+        )
+        if (cwd.isBlank()) {
+            _state.update { it.copy(error = "Set a working directory before opening a terminal") }
+            return
+        }
+        closeTerminal()
+        val emulator = ensureTerminalEmulator()
+        emulator.writeInput("\u001B[0m\u001B[2J\u001B[3J\u001B[H".toByteArray())
+        terminalSize = emulator.dimensions.let { TerminalSize(it.columns, it.rows) }
+        terminalInputBuffer.reset()
+        drainTerminalOutput()
+        val processHandle = "codex-web-android-terminal-${UUID.randomUUID()}"
+        _state.update {
+            it.copy(
+                terminal = TerminalUiState(
+                    processHandle = processHandle,
+                    cwd = cwd,
+                    emulator = emulator,
+                    status = TerminalStatus.STARTING,
+                ),
+                error = null,
+            )
+        }
+        startTerminalProcess(repo, processHandle, cwd)
+    }
+
+    fun closeTerminal() {
+        val terminal = _state.value.terminal ?: return
+        terminalUnsubscribe?.invoke()
+        terminalUnsubscribe = null
+        terminalInputJob?.cancel()
+        terminalInputJob = null
+        terminalOutputJob?.cancel()
+        terminalOutputJob = null
+        terminalResizeJob?.cancel()
+        terminalResizeJob = null
+        terminalInputChannel?.close()
+        terminalInputChannel = null
+        terminalResizeChannel?.close()
+        terminalResizeChannel = null
+        terminalInputBuffer.reset()
+        _state.update { it.copy(terminal = null) }
+        repository?.let { repo ->
+            viewModelScope.launch {
+                runCatching { repo.killTerminal(terminal.processHandle) }
+            }
+        }
+    }
+
+    fun restartTerminal() {
+        if (_state.value.terminal == null) return
+        closeTerminal()
+        openTerminal()
+    }
+
+    fun sendTerminalInput(input: ByteArray) {
+        if (input.isEmpty()) return
+        val terminal = _state.value.terminal ?: return
+        when (terminal.status) {
+            TerminalStatus.STARTING -> {
+                if (terminalInputBuffer.size() + input.size <= MAX_TERMINAL_INPUT_BUFFER) {
+                    terminalInputBuffer.write(input)
+                }
+            }
+            TerminalStatus.RUNNING -> {
+                terminalInputChannel?.trySend(input)
+            }
+            TerminalStatus.EXITED,
+            TerminalStatus.ERROR,
+            -> Unit
+        }
+    }
+
+    private fun startTerminalProcess(
+        repo: AppServerRepository,
+        processHandle: String,
+        cwd: String,
+    ) {
+        val emulator = terminalEmulator ?: return
+        val inputChannel = Channel<ByteArray>(Channel.UNLIMITED)
+        val resizeChannel = Channel<TerminalSize>(Channel.CONFLATED)
+        terminalInputChannel = inputChannel
+        terminalResizeChannel = resizeChannel
+        terminalUnsubscribe = repo.subscribeTerminal(processHandle) { event ->
+            if (_state.value.terminal?.processHandle != processHandle) return@subscribeTerminal
+            when (event) {
+                is TerminalProcessEvent.Output -> terminalOutputChannel.trySend(event.bytes)
+                is TerminalProcessEvent.Exited -> {
+                    terminalOutputChannel.trySend(
+                        "\r\n[process exited with code ${event.exitCode}]\r\n".toByteArray(),
+                    )
+                    terminalInputChannel?.close()
+                    terminalResizeChannel?.close()
+                    terminalInputJob?.cancel()
+                    terminalResizeJob?.cancel()
+                    updateTerminal(processHandle) {
+                        it.copy(status = TerminalStatus.EXITED, exitCode = event.exitCode)
+                    }
+                }
+            }
+        }
+        terminalOutputJob = viewModelScope.launch(Dispatchers.Default) {
+            for (chunk in terminalOutputChannel) {
+                emulator.writeInput(chunk)
+            }
+        }
+        viewModelScope.launch {
+            try {
+                repo.spawnTerminal(processHandle, cwd, terminalSize.normalized())
+                val terminal = _state.value.terminal?.takeIf { it.processHandle == processHandle }
+                if (terminal == null || terminal.status == TerminalStatus.ERROR) {
+                    runCatching { repo.killTerminal(processHandle) }
+                    return@launch
+                }
+                if (terminal.status != TerminalStatus.STARTING) return@launch
+                _state.update { state ->
+                    val terminal = state.terminal ?: return@update state
+                    state.copy(terminal = terminal.copy(status = TerminalStatus.RUNNING))
+                }
+                terminalInputJob = viewModelScope.launch {
+                    for (chunk in inputChannel) {
+                        val error = runCatching {
+                            repo.writeTerminalInput(processHandle, chunk)
+                        }.exceptionOrNull() ?: continue
+                        updateTerminal(processHandle) {
+                            it.copy(
+                                status = TerminalStatus.ERROR,
+                                error = error.message ?: "Terminal input failed",
+                            )
+                        }
+                        return@launch
+                    }
+                }
+                terminalResizeJob = viewModelScope.launch {
+                    for (size in resizeChannel) {
+                        runCatching { repo.resizeTerminal(processHandle, size) }
+                    }
+                }
+                val buffered = terminalInputBuffer.toByteArray()
+                terminalInputBuffer.reset()
+                if (buffered.isNotEmpty()) inputChannel.trySend(buffered)
+                resizeChannel.trySend(terminalSize.normalized())
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                updateTerminal(processHandle) { terminal ->
+                    if (terminal.status != TerminalStatus.STARTING) {
+                        terminal
+                    } else {
+                        terminal.copy(
+                            status = TerminalStatus.ERROR,
+                            error = error.message ?: "Could not start terminal",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun ensureTerminalEmulator(): TerminalEmulator {
+        terminalEmulator?.let { return it }
+        return TerminalEmulatorFactory.create(
+            looper = Looper.getMainLooper(),
+            initialRows = 24,
+            initialCols = 80,
+            defaultForeground = TERMINAL_FOREGROUND,
+            defaultBackground = TERMINAL_BACKGROUND,
+            onKeyboardInput = ::sendTerminalInput,
+            onResize = { dimensions ->
+                val size = TerminalSize(dimensions.columns, dimensions.rows).normalized()
+                terminalSize = size
+                if (_state.value.terminal?.status == TerminalStatus.RUNNING) {
+                    terminalResizeChannel?.trySend(size)
+                }
+            },
+        ).also { emulator ->
+            emulator.applyColorScheme(
+                ansiColors = TERMINAL_ANSI_COLORS,
+                defaultForeground = TERMINAL_FOREGROUND.toArgb(),
+                defaultBackground = TERMINAL_BACKGROUND.toArgb(),
+            )
+            terminalEmulator = emulator
+        }
+    }
+
+    private fun updateTerminal(
+        processHandle: String,
+        transform: (TerminalUiState) -> TerminalUiState,
+    ) {
+        _state.update { state ->
+            val terminal = state.terminal?.takeIf { it.processHandle == processHandle }
+                ?: return@update state
+            state.copy(terminal = transform(terminal))
+        }
+    }
+
+    private fun drainTerminalOutput() {
+        while (terminalOutputChannel.tryReceive().isSuccess) Unit
     }
 
     fun selectProject(path: String) {
@@ -879,6 +1149,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun signOut() {
+        closeTerminal()
         val url = _state.value.urlInput
         val cookie = cookieFor(url)
         val pushInstance = PushDistributors.ensureInstance(getApplication())
@@ -915,6 +1186,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
+        closeTerminal()
         reconnectJob?.cancel()
         repositoryCollector?.cancel()
         repository?.close()
@@ -966,8 +1238,23 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                             val selectedProject = snapshot.selectedThread?.cwd
                                 ?.takeIf { cwd -> cwd.isNotBlank() }
                                 ?.let(::normalizeProjectPath)
+                            val terminal = it.terminal?.let { terminal ->
+                                if (
+                                    snapshot.connection == "disconnected" &&
+                                    (terminal.status == TerminalStatus.STARTING ||
+                                        terminal.status == TerminalStatus.RUNNING)
+                                ) {
+                                    terminal.copy(
+                                        status = TerminalStatus.ERROR,
+                                        error = "Connection lost. Restart the terminal after reconnecting.",
+                                    )
+                                } else {
+                                    terminal
+                                }
+                            }
                             it.copy(
                                 snapshot = snapshot,
+                                terminal = terminal,
                                 cwdInput = selectedProject
                                     ?: it.cwdInput.ifBlank { snapshot.workspaceCwd },
                             ).withAdoptedSelectedThreadDraft()

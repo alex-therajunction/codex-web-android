@@ -15,6 +15,8 @@ private val knownNoOpNotifications = setOf(
     "thread/realtime/closed",
     "thread/realtime/error",
     "serverRequest/resolved",
+    "process/outputDelta",
+    "process/exited",
 )
 
 fun AppServerSnapshot.applyNotification(notification: RpcNotification): AppServerSnapshot {

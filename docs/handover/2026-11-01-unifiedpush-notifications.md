@@ -24,7 +24,7 @@ The server identity comes from the existing bridge/broker session. No separate p
 
 ## Limitations and security
 
-- The connector dependency is pinned to `org.unifiedpush.android:connector:3.0.10` because newer releases require a Kotlin metadata version newer than this project's Kotlin 2.0.21 toolchain. Re-evaluate when the project upgrades Kotlin.
+- The connector dependency is pinned to `org.unifiedpush.android:connector:3.0.10` because newer releases require a Kotlin metadata version newer than this project's current toolchain. Re-evaluate when the app upgrades Kotlin again.
 - The app stores the distributor package, instance UUID, short status/error strings, and public VAPID key. It never stores the push endpoint, Web Push private material, OAuth tokens, refresh tokens, or API keys.
 - Notifications are suppressed when Android permission or the global app notification toggle is off. The settings dialog links to system notification settings for recovery.
 - A live UnifiedPush delivery test needs a distributor, push service, and Android runtime; the JVM verification does not prove end-to-end delivery.

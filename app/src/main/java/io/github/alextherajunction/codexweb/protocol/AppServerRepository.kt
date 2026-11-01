@@ -3,6 +3,7 @@ package io.github.alextherajunction.codexweb.protocol
 import io.github.alextherajunction.codexweb.BuildConfig
 import io.github.alextherajunction.codexweb.data.DeploymentSession
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,12 +39,16 @@ class AppServerRepository(
     val state: StateFlow<AppServerSnapshot> = _state.asStateFlow()
     private val sendMutex = Mutex()
     private val resumedThreads = mutableSetOf<String>()
+    private val terminalListeners = ConcurrentHashMap<String, (TerminalProcessEvent) -> Unit>()
     private var session: DeploymentSession? = null
     private var effectivePermissionConfig = EffectivePermissionConfig()
 
     init {
         scope.launch {
             rpc.notificationFlow.collect { notification ->
+                parseTerminalProcessEvent(notification)?.let { event ->
+                    terminalListeners[event.processHandle]?.invoke(event)
+                }
                 _state.update {
                     it.applyNotification(notification).withLiveBridgeConnection()
                 }
@@ -89,6 +94,7 @@ class AppServerRepository(
             _state.update {
                 it.copy(
                     connection = "connected",
+                    platformFamily = rpc.platformFamily,
                     deploymentUrl = session.deploymentUrl,
                     bridgeUrl = redactUrl(session.bridgeUrl),
                     userEmail = session.user.email,
@@ -161,6 +167,7 @@ class AppServerRepository(
                     current.selectedPermissionProfile
                 },
                 defaultPermissionProfile = effectivePermissionConfig.defaultProfile,
+                platformFamily = rpc.platformFamily,
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
@@ -201,6 +208,7 @@ class AppServerRepository(
 
     fun close() {
         resumedThreads.clear()
+        terminalListeners.clear()
         rpc.close()
         _state.update { it.copy(connection = "disconnected") }
     }
@@ -240,6 +248,39 @@ class AppServerRepository(
 
     fun updateWorkspaceCwd(path: String) {
         _state.update { it.copy(workspaceCwd = path.trim()) }
+    }
+
+    fun subscribeTerminal(
+        processHandle: String,
+        listener: (TerminalProcessEvent) -> Unit,
+    ): () -> Unit {
+        terminalListeners[processHandle] = listener
+        return { terminalListeners.remove(processHandle, listener) }
+    }
+
+    suspend fun spawnTerminal(
+        processHandle: String,
+        cwd: String,
+        size: TerminalSize,
+    ) {
+        val platformFamily = _state.value.platformFamily
+        rpc.request(
+            "process/spawn",
+            terminalSpawnParams(processHandle, cwd, platformFamily, size),
+        )
+    }
+
+    suspend fun writeTerminalInput(processHandle: String, input: ByteArray) {
+        if (input.isEmpty()) return
+        rpc.request("process/writeStdin", terminalWriteParams(processHandle, input))
+    }
+
+    suspend fun resizeTerminal(processHandle: String, size: TerminalSize) {
+        rpc.request("process/resizePty", terminalResizeParams(processHandle, size))
+    }
+
+    suspend fun killTerminal(processHandle: String) {
+        rpc.request("process/kill", terminalKillParams(processHandle))
     }
 
     fun startNewChat() {

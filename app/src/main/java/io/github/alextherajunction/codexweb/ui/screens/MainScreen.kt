@@ -141,6 +141,7 @@ fun MainScreen(
     onPermissionSelected: (PermissionProfile) -> Unit,
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
+    onOpenTerminal: () -> Unit,
     onInterrupt: () -> Unit,
     onCwdChange: (String) -> Unit,
     onApprove: (PendingRequest, ApprovalDecision) -> Unit,
@@ -358,6 +359,14 @@ fun MainScreen(
                                         },
                                     )
                                 }
+                                DropdownMenuItem(
+                                    text = { Text("Terminal") },
+                                    leadingIcon = { Icon(Icons.Rounded.Terminal, null) },
+                                    onClick = {
+                                        showOverflow = false
+                                        onOpenTerminal()
+                                    },
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Server working directory") },
                                     leadingIcon = { Icon(Icons.Rounded.Folder, null) },

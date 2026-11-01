@@ -146,6 +146,23 @@ class SessionReducerTest {
     }
 
     @Test
+    fun `raw terminal process notifications are routed outside chat diagnostics`() {
+        val state = AppServerSnapshot().applyNotification(
+            notification(
+                "process/outputDelta",
+                """{"processHandle":"terminal-1","stream":"stdout","deltaBase64":"aGVsbG8=","capReached":false}""",
+            ),
+        ).applyNotification(
+            notification(
+                "process/exited",
+                """{"processHandle":"terminal-1","exitCode":0}""",
+            ),
+        )
+
+        assertTrue(state.diagnostics.none { it.method.startsWith("unhandled:") })
+    }
+
+    @Test
     fun `turn diff updates are stored and retained when the turn completes`() {
         val diff = "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n"
         val escapedDiff = diff.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")

@@ -361,6 +361,7 @@ data class AppServerSnapshot(
     val requiresOpenaiAuth: Boolean = false,
     val homeDirectory: String = "",
     val workspaceCwd: String = "",
+    val platformFamily: String = "unix",
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String = "",
     val selectedReasoningEffort: String? = null,

@@ -14,6 +14,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Native thread drawer backed by `thread/list`, `thread/resume`, metadata-only `thread/read`, and paginated `thread/turns/list`, with a “Load earlier messages” control.
 - Folder-based projects derived from thread `cwd`: the drawer groups conversations by server project, with an empty current project shown until its first conversation exists.
 - Project-aware new chat: choose a recent project or browse the server directory tree through `fs/readDirectory`; the selected path is persisted and sent as `cwd` to `thread/start` and `turn/start`.
+- Standalone interactive PTY terminal from **More → Terminal**, backed by the same `process/spawn` session as the Codex Web sidebar terminal, with streamed ANSI output, live PTY resize, soft-keyboard input, restart, and close cleanup.
 - Streaming assistant text from `item/agentMessage/delta`.
 - Failed Turn errors render immediately after that Turn rather than at the end of the conversation.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
@@ -78,7 +79,7 @@ Each APK is self-signed. If repository signing secrets are not configured, the w
 
 ## Build locally
 
-Prerequisites: JDK 17, Android SDK platform 35, and build-tools 35.0.0.
+Prerequisites: JDK 17, Android SDK platform 36, and build-tools 36.0.0.
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
