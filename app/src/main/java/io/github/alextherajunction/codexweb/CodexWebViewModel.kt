@@ -14,13 +14,19 @@ import io.github.alextherajunction.codexweb.protocol.AppServerRepository
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
+import io.github.alextherajunction.codexweb.protocol.RpcException
+import io.github.alextherajunction.codexweb.protocol.ServerDirectory
+import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -41,7 +47,13 @@ data class AppUiState(
     val sending: Boolean = false,
     val openingThreadId: String? = null,
     val loadingEarlierTurns: Boolean = false,
+    val reconnecting: Boolean = false,
+    val reconnectAttempt: Int = 0,
     val cwdInput: String = "",
+    val projectBrowserPath: String = "",
+    val projectBrowserDirectories: List<ServerDirectory> = emptyList(),
+    val projectBrowserLoading: Boolean = false,
+    val projectBrowserError: String? = null,
     val snapshot: AppServerSnapshot = AppServerSnapshot(),
 )
 
@@ -56,12 +68,16 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     private val gateway = WebSessionGateway(httpClient)
 
     private val _state = MutableStateFlow(
-        AppUiState(urlInput = preferences.deploymentUrl.orEmpty()),
+        AppUiState(
+            urlInput = preferences.deploymentUrl.orEmpty(),
+            cwdInput = preferences.lastProjectPath.orEmpty(),
+        ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     private var repository: AppServerRepository? = null
     private var repositoryCollector: Job? = null
+    private var reconnectJob: Job? = null
     private var connecting = false
     private var checkingLoginCookie = false
 
@@ -88,7 +104,30 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateCwd(value: String) {
-        _state.update { it.copy(cwdInput = value) }
+        val normalized = normalizeProjectPath(value)
+        preferences.lastProjectPath = normalized
+        repository?.updateWorkspaceCwd(normalized)
+        _state.update { it.copy(cwdInput = normalized) }
+    }
+
+    fun selectProject(path: String) {
+        val normalized = normalizeProjectPath(path)
+        if (normalized.isBlank()) return
+        preferences.lastProjectPath = normalized
+        repository?.updateWorkspaceCwd(normalized)
+        _state.update {
+            it.copy(
+                cwdInput = normalized,
+                projectBrowserPath = normalized,
+                projectBrowserError = null,
+            )
+        }
+    }
+
+    fun newChatInProject(path: String) {
+        repository?.startNewChat()
+        selectProject(path)
+        _state.update { it.copy(composerText = "", error = null) }
     }
 
     fun updateModel(modelId: String) {
@@ -157,7 +196,14 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
             _state.update { it.copy(error = "Enter a Codex Web URL") }
             return
         }
-        if (cookie == null || !hasWebAuthSessionCookie(cookie)) {
+        val activeRepository = repository
+        if (activeRepository != null && _state.value.phase == AppPhase.READY) {
+            if (cookie == null || !hasWebAuthSessionCookie(cookie)) {
+                returnToLogin("Your Codex Web login expired. Sign in again.", url)
+            } else {
+                startReconnect(activeRepository)
+            }
+        } else if (cookie == null || !hasWebAuthSessionCookie(cookie)) {
             beginLogin()
         } else {
             connectWithCookie(url, cookie)
@@ -171,6 +217,9 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             try {
                 repo.openThread(threadId)
+                repo.state.value.selectedThread?.cwd
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(::selectProject)
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not open thread") }
             } finally {
@@ -191,6 +240,44 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 repo.refreshThreads()
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not refresh threads") }
+            }
+        }
+    }
+
+    fun browseProjectDirectory(path: String) {
+        val repo = repository ?: return
+        val snapshot = _state.value.snapshot
+        val normalized = normalizeProjectPath(path)
+            .ifBlank { normalizeProjectPath(_state.value.cwdInput) }
+            .ifBlank { normalizeProjectPath(snapshot.workspaceCwd) }
+            .ifBlank { normalizeProjectPath(snapshot.homeDirectory) }
+            .ifBlank { "/" }
+        _state.update {
+            it.copy(
+                projectBrowserPath = normalized,
+                projectBrowserLoading = true,
+                projectBrowserError = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val directories = repo.readDirectories(normalized)
+                _state.update {
+                    it.copy(
+                        projectBrowserDirectories = directories,
+                        projectBrowserLoading = false,
+                    )
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(
+                        projectBrowserDirectories = emptyList(),
+                        projectBrowserLoading = false,
+                        projectBrowserError = error.message ?: "Could not read server folder",
+                    )
+                }
             }
         }
     }
@@ -216,6 +303,10 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         val text = _state.value.composerText.trim()
         if (text.isEmpty() || _state.value.sending) return
         val snapshot = _state.value.snapshot
+        if (snapshot.connection != "connected") {
+            _state.update { it.copy(error = "Connection lost. Reconnecting to app-server…") }
+            return
+        }
         if (snapshot.selectedActiveTurnId != null) return
         val cwd = _state.value.cwdInput.ifBlank { snapshot.workspaceCwd }
         if (cwd.isBlank()) {
@@ -298,6 +389,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     fun signOut() {
         val url = _state.value.urlInput
         val cookie = cookieFor(url)
+        reconnectJob?.cancel()
+        reconnectJob = null
         repositoryCollector?.cancel()
         repository?.close()
         repository = null
@@ -323,6 +416,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
+        reconnectJob?.cancel()
         repositoryCollector?.cancel()
         repository?.close()
         httpClient.dispatcher.executorService.shutdown()
@@ -337,11 +431,15 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     ) {
         if (connecting) return
         connecting = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         _state.update {
             it.copy(
                 phase = AppPhase.CONNECTING,
                 urlInput = rawUrl.trim(),
                 error = null,
+                reconnecting = false,
+                reconnectAttempt = 0,
             )
         }
         viewModelScope.launch {
@@ -359,12 +457,28 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 val repo = AppServerRepository(viewModelScope)
                 repository = repo
                 repositoryCollector = viewModelScope.launch {
+                    var wasConnected = false
                     repo.state.collect { snapshot ->
+                        if (snapshot.connection == "connected") {
+                            wasConnected = true
+                        }
                         _state.update {
+                            val selectedProject = snapshot.selectedThread?.cwd
+                                ?.takeIf { cwd -> cwd.isNotBlank() }
+                                ?.let(::normalizeProjectPath)
                             it.copy(
                                 snapshot = snapshot,
-                                cwdInput = it.cwdInput.ifBlank { snapshot.workspaceCwd },
+                                cwdInput = selectedProject
+                                    ?: it.cwdInput.ifBlank { snapshot.workspaceCwd },
                             )
+                        }
+                        if (
+                            wasConnected &&
+                            snapshot.connection == "disconnected" &&
+                            repository === repo
+                        ) {
+                            wasConnected = false
+                            startReconnect(repo)
                         }
                     }
                 }
@@ -375,6 +489,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 _state.update {
                     it.copy(
                         phase = AppPhase.READY,
+                        reconnecting = false,
+                        reconnectAttempt = 0,
                         cwdInput = it.cwdInput.ifBlank { session.user.cwd.ifBlank { session.homeDirectory } },
                     )
                 }
@@ -400,6 +516,78 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 connecting = false
             }
         }
+    }
+
+    private fun startReconnect(repo: AppServerRepository) {
+        if (repository !== repo || _state.value.phase != AppPhase.READY) return
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            var attempt = 0
+            while (isActive && repository === repo && _state.value.phase == AppPhase.READY) {
+                attempt += 1
+                _state.update {
+                    it.copy(reconnecting = true, reconnectAttempt = attempt)
+                }
+                try {
+                    val rawUrl = _state.value.urlInput.trim()
+                    val cookie = cookieFor(rawUrl)
+                    if (cookie == null || !hasWebAuthSessionCookie(cookie)) {
+                        returnToLogin("Your Codex Web login expired. Sign in again.", rawUrl)
+                        return@launch
+                    }
+                    val normalized = normalizeDeploymentUrl(rawUrl).toString().trimEnd('/')
+                    val session = gateway.resolve(normalized, cookie)
+                    val selectedThreadId = _state.value.snapshot.selectedThreadId
+                    repo.connect(
+                        session = session,
+                        preferredThreadId = selectedThreadId,
+                        openMostRecentThread = false,
+                    )
+                    preferences.deploymentUrl = normalized
+                    preferences.lastModelId
+                        ?.takeIf { preferred -> repo.state.value.models.any { it.id == preferred } }
+                        ?.let(repo::selectModel)
+                    _state.update {
+                        it.copy(
+                            reconnecting = false,
+                            reconnectAttempt = 0,
+                            error = null,
+                        )
+                    }
+                    return@launch
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: SessionExpiredException) {
+                    returnToLogin("Your Codex Web login expired. Sign in again.", _state.value.urlInput)
+                    return@launch
+                } catch (error: RpcException) {
+                    if (error.code == 401) {
+                        returnToLogin("Your Codex Web login expired. Sign in again.", _state.value.urlInput)
+                        return@launch
+                    }
+                    repo.markDisconnected(friendlyMessage(error))
+                } catch (error: Exception) {
+                    repo.markDisconnected(friendlyMessage(error))
+                }
+                delay(reconnectDelayMillis(attempt))
+            }
+        }
+    }
+
+    private fun returnToLogin(message: String, url: String) {
+        repositoryCollector?.cancel()
+        repositoryCollector = null
+        repository?.close()
+        repository = null
+        CookieManager.getInstance().apply {
+            removeAllCookies(null)
+            flush()
+        }
+        _state.value = AppUiState(
+            phase = AppPhase.SIGNED_OUT,
+            urlInput = url.trim(),
+            error = message,
+        )
     }
 
     private fun cookieFor(url: String): String? {

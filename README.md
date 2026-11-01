@@ -9,12 +9,15 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Enter and persist the Codex Web deployment URL.
 - Sign in through the deployment's normal password or SSO page in a WebView.
 - Automatically reconnect on launch while the WebView session cookie is valid.
+- Keep the session alive with WebSocket heartbeats and recover from in-session drops using exponential backoff while preserving the selected thread and project.
 - Discover the bridge through `/api/codex/bridge-url`.
 - Native thread drawer backed by `thread/list`, `thread/resume`, metadata-only `thread/read`, and paginated `thread/turns/list`, with a “Load earlier messages” control.
+- Folder-based projects derived from thread `cwd`: the drawer groups conversations by server project, with an empty current project shown until its first conversation exists.
+- Project-aware new chat: choose a recent project or browse the server directory tree through `fs/readDirectory`; the selected path is persisted and sent as `cwd` to `thread/start` and `turn/start`.
 - Streaming assistant text from `item/agentMessage/delta`.
+- Failed Turn errors render immediately after that Turn rather than at the end of the conversation.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
 - Model picker from the server's `model/list` catalog and `config/read` model/provider settings. If `config/read` fails, the app retries, then uses thread model metadata; it never falls back to an unverified OpenAI-only catalog.
-- Server-side working-directory control.
 - Interrupt active turns through `turn/interrupt`.
 - Command, file-change, and permission approval cards using the exact app-server response schemas.
 - User-input question responses and MCP request cancellation.
@@ -114,7 +117,7 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 
 ## Security notes
 
-- The app persists only the deployment URL and last selected server-provided model ID.
+- The app persists only the deployment URL, last selected server-provided model ID, and last selected server project path. Project paths are not credentials and remain server-side state.
 - WebView cookies are managed by Android's WebView cookie store, not copied into app preferences or logs.
 - WebView file/content access is disabled and mixed content is rejected.
 - SSL certificate errors are not bypassed. Use a trusted certificate for HTTPS deployments.
@@ -127,5 +130,5 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 - `app/src/main/java/.../data/`: deployment URL validation, authenticated HTTP discovery, preferences.
 - `app/src/main/java/.../protocol/`: JSON-RPC transport, app-server models/reducer, request responses.
 - `app/src/main/java/.../ui/`: Compose screens, chat rendering, approval and diagnostics surfaces.
-- `app/src/test/`: reducer, URL/session, and exact approval response tests.
+- `app/src/test/`: reducer, project grouping/path browsing, URL/session, and exact approval response tests.
 - `docs/handover/`: implementation handover and protocol notes.

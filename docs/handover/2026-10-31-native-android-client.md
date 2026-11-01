@@ -4,8 +4,9 @@
 
 - `CodexWebViewModel` owns the high-level phase: signed out, WebView authentication, connecting, ready.
 - `WebSessionGateway` validates the deployment URL, reads `/api/auth/me` and `/api/codex/bridge-url` with the WebView cookie, and resolves a same-origin bridge path to `ws`/`wss`.
-- `CodexRpcClient` owns the JSON-RPC WebSocket, request IDs, pending calls, notifications, server requests, close events, and malformed-message reporting.
-- `AppServerRepository` initializes the protocol, loads `model/list`, `config/read`, `account/read`, and `thread/list`, hydrates paginated thread history, starts turns, interrupts turns, and answers server requests.
+- `CodexRpcClient` owns the JSON-RPC WebSocket, request IDs, pending calls, notifications, server requests, close events, malformed-message reporting, and a 20-second WebSocket heartbeat.
+- `AppServerRepository` initializes the protocol, loads `model/list`, `config/read`, `account/read`, and `thread/list`, browses server directories through `fs/readDirectory`, hydrates paginated thread history, starts turns, interrupts turns, and answers server requests. Reconnect calls preserve the current snapshot and accept an explicit thread to resume.
+- `CodexWebViewModel` schedules automatic reconnects after a connected bridge drops, re-resolves the web session and bridge URL on every attempt, shows the attempt count, and stops on sign-out or session expiry.
 - `SessionReducer` is a pure notification reducer. It keeps unknown notifications as diagnostics and has no UI dependencies.
 - Compose screens consume a single `AppUiState` plus the app-server snapshot.
 
@@ -19,8 +20,13 @@
 - Opening a thread calls `thread/resume` with `excludeTurns=true`, metadata-only `thread/read`, then `thread/turns/list` with `itemsView=full` and `sortDirection=desc`. The initial page is reversed into chronological order, and older pages are prepended through the “Load earlier messages” control.
 - `thread/resume` or `thread/read` model metadata reconciles the selected model with the thread’s real model/provider when available.
 - Sending calls `thread/start` when there is no selected thread, then `turn/start` with a text `UserInput`.
+- Projects are a client-side view over unique thread `cwd` values; there is no separate project registry or app-server project API. The current working directory is inserted as an empty project when it has no thread yet, and the active project is sorted first without duplication.
+- The new-chat project picker lists recent project paths derived from `thread/list`. Server folder browsing calls `fs/readDirectory` with `{ "path": "<absolute server path>" }` and reads `entries[].fileName` / `entries[].isDirectory`; selecting a directory joins it under the current server path.
+- The selected project is stored as `lastProjectPath`, shown in the new-chat project bar, and passed as `cwd` to both `thread/start` and `turn/start`. Opening a thread reconciles the active project from that thread's server-provided `cwd`.
 - `item/commandExecution/terminalInteraction` appends its `stdin` payload to the matching command card and renders it as “Terminal input” instead of producing an unhandled-notification diagnostic.
 - `deprecationNotice` is stored as a deduplicated `app-server.deprecationNotice` diagnostic with its summary and details.
+- Conversation rows are flattened per Turn: all Turn items render first, followed immediately by that Turn's error card. Errors are never collected into a bottom-of-conversation pass.
+- WebSocket clients use a 20-second ping interval. A connected-to-disconnected transition starts retries at 1s, 2s, 4s, 8s, 16s, then 30s; each attempt re-resolves the web session and bridge URL. A successful reconnect resumes the prior thread, while a selected new chat remains a new chat.
 - Command and file-change approvals respond with `{ "decision": "accept" | "acceptForSession" | "decline" }`.
 - Permission approvals respond with `{ "permissions": {...}, "scope": "turn" | "session" }`; they intentionally do not use the command approval shape.
 - User input responds with `{ "answers": { "<question-id>": { "answers": ["..."] } } }`.
@@ -40,7 +46,15 @@
 - Android WebView owns the login flow and the `codex_web_session` HttpOnly cookie.
 - A page-load event only starts a handoff probe when the cookie header contains that exact session cookie name. Analytics, theme, or other cookies cannot trigger an early connection.
 - The handoff probe calls `/api/auth/me` before leaving the WebView. A 401 during login keeps the WebView and login page visible; only a successful authenticated response transitions to `CONNECTING`.
-- `retryConnection()` starts the login flow when the session cookie is absent. App preferences still contain only the deployment URL and last model ID.
+- `retryConnection()` starts the login flow when the session cookie is absent. App preferences contain only the deployment URL, last model ID, and last server project path; they never contain credentials.
+
+## Verification results (reconnect and inline errors, 2026-11-01)
+
+- `./gradlew :app:testDebugUnitTest` passed all 31 unit tests.
+- `./gradlew :app:assembleRelease -PversionName=0.1.16 -PversionCode=16` built a v2-signed local release APK.
+- The emulator mock fixture placed a failed Turn error between that Turn and the following Turn.
+- A forced WebSocket close (`1012`) followed by seven seconds of rejected reconnects produced automatic retries and a successful reattach; the mock observed `thread/resume` for the same thread after reconnect.
+- The mock bridge was local-only and did not read or modify a user `CODEX_HOME`.
 
 ## Verification commands
 
@@ -51,6 +65,15 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
   app/build/outputs/apk/release/app-release.apk
 ```
+
+## Verification results (2026-11-01)
+
+- `./gradlew :app:testDebugUnitTest :app:assembleRelease -PversionName=0.1.15 -PversionCode=15 --no-daemon` passed all 27 unit tests and built the release APK.
+- Android 15 (API 35, x86_64) emulator smoke against the local mock bridge rendered `PROJECTS · 2`, grouped `work` (`/home/test/work`) and `other` (`/home/test/other`), kept the active `work` project first, and showed no duplicate empty project.
+- Project search reduced the picker from two projects to only `other` when typing `other`.
+- The folder browser opened at `/home/test/work`, navigated to `/home/test`, selected `/home/test/new-project`, and updated the new-chat project bar and composer path.
+- Sending from that new chat logged `thread/start` with `"cwd":"/home/test/new-project"` and `turn/start` with the same `cwd`.
+- The mock bridge was local-only and did not read or modify a user `CODEX_HOME`. This Android build is local verification only and has not been published.
 
 ## Verification results (2026-10-31)
 

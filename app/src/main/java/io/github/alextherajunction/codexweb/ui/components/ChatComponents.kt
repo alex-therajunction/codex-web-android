@@ -441,7 +441,12 @@ fun GoalSummaryCard(goal: GoalInfo) {
 }
 
 @Composable
-fun ContextChips(cwd: String, usage: UsageInfo?, model: String?) {
+fun ContextChips(
+    cwd: String,
+    usage: UsageInfo?,
+    model: String?,
+    onCwdClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -451,7 +456,7 @@ fun ContextChips(cwd: String, usage: UsageInfo?, model: String?) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AssistChip(
-            onClick = {},
+            onClick = onCwdClick,
             label = {
                 Text(
                     cwd,

@@ -29,6 +29,8 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Menu
@@ -79,16 +81,20 @@ import androidx.compose.ui.unit.dp
 import io.github.alextherajunction.codexweb.AppUiState
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
-import io.github.alextherajunction.codexweb.protocol.ChatItem
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
+import io.github.alextherajunction.codexweb.protocol.ProjectGroup
 import io.github.alextherajunction.codexweb.protocol.ThreadInfo
 import io.github.alextherajunction.codexweb.protocol.TurnInfo
+import io.github.alextherajunction.codexweb.protocol.groupThreadsByProjects
+import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
+import io.github.alextherajunction.codexweb.protocol.projectDisplayName
 import io.github.alextherajunction.codexweb.ui.components.ChatItemRow
 import io.github.alextherajunction.codexweb.ui.components.ContextChips
 import io.github.alextherajunction.codexweb.ui.components.DiagnosticsDialog
 import io.github.alextherajunction.codexweb.ui.components.GoalSummaryCard
 import io.github.alextherajunction.codexweb.ui.components.PendingRequestCard
 import io.github.alextherajunction.codexweb.ui.components.PlanSummaryCard
+import io.github.alextherajunction.codexweb.ui.components.ProjectPickerDialog
 import io.github.alextherajunction.codexweb.ui.components.TurnErrorCard
 import io.github.alextherajunction.codexweb.ui.components.UserInputDialog
 import io.github.alextherajunction.codexweb.ui.components.WorkingDirectoryDialog
@@ -108,6 +114,9 @@ fun MainScreen(
     state: AppUiState,
     onThreadSelected: (String) -> Unit,
     onNewChat: () -> Unit,
+    onNewChatInProject: (String) -> Unit,
+    onProjectSelected: (String) -> Unit,
+    onBrowseProject: (String) -> Unit,
     onRefreshThreads: () -> Unit,
     onLoadEarlierTurns: () -> Unit,
     onModelSelected: (String) -> Unit,
@@ -128,12 +137,21 @@ fun MainScreen(
     var showModelMenu by remember { mutableStateOf(false) }
     var showOverflow by remember { mutableStateOf(false) }
     var showCwdDialog by remember { mutableStateOf(false) }
+    var showProjectPicker by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var userInputRequest by remember { mutableStateOf<PendingRequest?>(null) }
 
     val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
     val activeTurnId = snapshot.selectedActiveTurnId
     val firstPending = snapshot.pendingRequests.firstOrNull()
+    val isNewChat = snapshot.selectedThreadId == null
+    val currentProject = normalizeProjectPath(
+        snapshot.selectedThread?.cwd
+            ?: state.cwdInput.ifBlank { snapshot.workspaceCwd },
+    )
+    val projectGroups = remember(snapshot.threads, currentProject) {
+        groupThreadsByProjects(snapshot.threads, currentProject)
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -144,9 +162,15 @@ fun MainScreen(
             ) {
                 ThreadDrawer(
                     state = state,
+                    projectGroups = projectGroups,
+                    currentProject = currentProject,
                     onClose = { scope.launch { drawerState.close() } },
                     onNewChat = {
                         onNewChat()
+                        scope.launch { drawerState.close() }
+                    },
+                    onNewChatInProject = { path ->
+                        onNewChatInProject(path)
                         scope.launch { drawerState.close() }
                     },
                     onThreadSelected = {
@@ -182,10 +206,21 @@ fun MainScreen(
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
-                                text = threadSubtitle(snapshot.selectedThread, snapshot.connection),
+                                text = threadSubtitle(
+                                    snapshot.selectedThread,
+                                    snapshot.connection,
+                                    state.reconnecting,
+                                    state.reconnectAttempt,
+                                ),
                                 maxLines = 1,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = if (snapshot.connection == "connected") CodexMuted else CodexDanger,
+                                color = if (
+                                    snapshot.connection == "connected" && !state.reconnecting
+                                ) {
+                                    CodexMuted
+                                } else {
+                                    CodexDanger
+                                },
                             )
                         }
                     },
@@ -307,7 +342,17 @@ fun MainScreen(
                     cwd = state.cwdInput.ifBlank { snapshot.workspaceCwd },
                     usage = snapshot.selectedUsage,
                     model = selectedModel?.displayName,
+                    onCwdClick = {
+                        if (isNewChat) showProjectPicker = true else showCwdDialog = true
+                    },
                 )
+                if (state.reconnecting) {
+                    ReconnectBanner(
+                        attempt = state.reconnectAttempt,
+                        detail = snapshot.lastError,
+                        onRetry = onReconnect,
+                    )
+                }
                 Box(Modifier.weight(1f)) {
                     Conversation(
                         snapshot = snapshot,
@@ -329,6 +374,12 @@ fun MainScreen(
                         )
                     }
                 }
+                if (isNewChat) {
+                    ProjectSelectorBar(
+                        project = currentProject,
+                        onClick = { showProjectPicker = true },
+                    )
+                }
                 Composer(
                     value = state.composerText,
                     cwd = state.cwdInput.ifBlank { snapshot.workspaceCwd },
@@ -337,7 +388,9 @@ fun MainScreen(
                     onValueChange = onComposerChange,
                     onSend = onSend,
                     onInterrupt = onInterrupt,
-                    onCwdClick = { showCwdDialog = true },
+                    onCwdClick = {
+                        if (isNewChat) showProjectPicker = true else showCwdDialog = true
+                    },
                 )
             }
         }
@@ -348,6 +401,22 @@ fun MainScreen(
             current = state.cwdInput.ifBlank { snapshot.workspaceCwd },
             onDismiss = { showCwdDialog = false },
             onConfirm = onCwdChange,
+        )
+    }
+    if (showProjectPicker) {
+        ProjectPickerDialog(
+            currentProject = currentProject,
+            projects = projectGroups.filter { it.workingDirectory.isNotBlank() },
+            browserPath = state.projectBrowserPath,
+            browserDirectories = state.projectBrowserDirectories,
+            browserLoading = state.projectBrowserLoading,
+            browserError = state.projectBrowserError,
+            onBrowse = onBrowseProject,
+            onSelect = {
+                onProjectSelected(it)
+                showProjectPicker = false
+            },
+            onDismiss = { showProjectPicker = false },
         )
     }
     if (showDiagnostics) {
@@ -369,15 +438,107 @@ fun MainScreen(
 }
 
 @Composable
+private fun ReconnectBanner(
+    attempt: Int,
+    detail: String?,
+    onRetry: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        color = CodexSurface,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, CodexDanger),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = CodexAmber,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Reconnecting to app-server… attempt $attempt",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = CodexAmber,
+                )
+                if (!detail.isNullOrBlank()) {
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CodexMuted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            TextButton(onClick = onRetry) {
+                Text("Retry now", color = CodexLime)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectSelectorBar(
+    project: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clickable(onClick = onClick),
+        color = CodexSurface,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, CodexOutline),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Folder, null, tint = CodexLime, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    projectDisplayName(project),
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    project.ifBlank { "Choose a server folder for this conversation" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CodexMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text("Change", color = CodexLime, style = MaterialTheme.typography.labelMedium)
+            Icon(Icons.Rounded.ChevronRight, null, tint = CodexLime, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+@Composable
 private fun ThreadDrawer(
     state: AppUiState,
+    projectGroups: List<ProjectGroup>,
+    currentProject: String,
     onClose: () -> Unit,
     onNewChat: () -> Unit,
+    onNewChatInProject: (String) -> Unit,
     onThreadSelected: (String) -> Unit,
     onRefreshThreads: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     val snapshot = state.snapshot
+    var collapsedProjects by remember { mutableStateOf(emptySet<String>()) }
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.padding(start = 20.dp, end = 12.dp, top = 22.dp, bottom = 12.dp),
@@ -400,9 +561,17 @@ private fun ThreadDrawer(
             Column(Modifier.weight(1f)) {
                 Text("Codex Web", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (snapshot.connection == "connected") "app-server connected" else snapshot.connection,
+                    when {
+                        state.reconnecting -> "reconnecting · attempt ${state.reconnectAttempt}"
+                        snapshot.connection == "connected" -> "app-server connected"
+                        else -> snapshot.connection
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (snapshot.connection == "connected") CodexLime else CodexDanger,
+                    color = if (snapshot.connection == "connected" && !state.reconnecting) {
+                        CodexLime
+                    } else {
+                        CodexDanger
+                    },
                 )
             }
             IconButton(onClick = onClose) {
@@ -427,7 +596,7 @@ private fun ThreadDrawer(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "THREADS",
+                "PROJECTS · ${projectGroups.size}",
                 style = MaterialTheme.typography.labelMedium,
                 color = CodexMuted,
                 modifier = Modifier.weight(1f),
@@ -436,12 +605,12 @@ private fun ThreadDrawer(
                 Icon(Icons.Rounded.Refresh, "Refresh threads", modifier = Modifier.size(17.dp), tint = CodexMuted)
             }
         }
-        if (snapshot.threads.isEmpty()) {
+        if (projectGroups.isEmpty()) {
             Column(Modifier.padding(20.dp)) {
-                Text("No threads yet", style = MaterialTheme.typography.titleMedium)
+                Text("No projects yet", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Start a chat and it will appear here from thread/list.",
+                    "Choose a server folder when starting a chat. Projects are created from thread cwd values.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = CodexMuted,
                 )
@@ -451,12 +620,45 @@ private fun ThreadDrawer(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                items(snapshot.threads, key = { it.id }) { thread ->
-                    ThreadRow(
-                        thread = thread,
-                        selected = thread.id == snapshot.selectedThreadId,
-                        onClick = { onThreadSelected(thread.id) },
-                    )
+                projectGroups.forEach { group ->
+                    val projectKey = group.workingDirectory.ifBlank { "__no_project" }
+                    val collapsed = projectKey in collapsedProjects
+                    item(key = "project:$projectKey") {
+                        ProjectHeader(
+                            group = group,
+                            active = group.workingDirectory == currentProject,
+                            collapsed = collapsed,
+                            onToggle = {
+                                collapsedProjects = if (collapsed) {
+                                    collapsedProjects - projectKey
+                                } else {
+                                    collapsedProjects + projectKey
+                                }
+                            },
+                            onNewChat = group.workingDirectory.takeIf { it.isNotBlank() }
+                                ?.let { { onNewChatInProject(it) } },
+                        )
+                    }
+                    if (!collapsed) {
+                        if (group.threads.isEmpty()) {
+                            item(key = "project-empty:$projectKey") {
+                                Text(
+                                    "No conversations in this project yet",
+                                    modifier = Modifier.padding(start = 42.dp, top = 2.dp, bottom = 8.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = CodexMuted,
+                                )
+                            }
+                        } else {
+                            items(group.threads, key = { it.id }) { thread ->
+                                ThreadRow(
+                                    thread = thread,
+                                    selected = thread.id == snapshot.selectedThreadId,
+                                    onClick = { onThreadSelected(thread.id) },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -490,6 +692,77 @@ private fun ThreadDrawer(
                 Icon(Icons.Rounded.Logout, null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Sign out")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectHeader(
+    group: ProjectGroup,
+    active: Boolean,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onNewChat: (() -> Unit)?,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 2.dp)
+            .clickable(onClick = onToggle),
+        color = if (active) CodexSurfaceHigh else Color.Transparent,
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (collapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore,
+                contentDescription = if (collapsed) "Expand project" else "Collapse project",
+                tint = CodexMuted,
+                modifier = Modifier.size(18.dp),
+            )
+            Icon(
+                Icons.Rounded.Folder,
+                null,
+                tint = if (active) CodexLime else CodexMuted,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        group.displayName,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${group.threads.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CodexMuted,
+                    )
+                }
+                Text(
+                    group.workingDirectory.ifBlank { "No project folder" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CodexMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (onNewChat != null) {
+                IconButton(onClick = onNewChat, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Rounded.Add,
+                        contentDescription = "New chat in ${group.displayName}",
+                        tint = CodexLime,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
@@ -540,14 +813,6 @@ private fun ThreadRow(
                         style = MaterialTheme.typography.labelMedium,
                         color = if (thread.isActive) CodexAmber else CodexMuted,
                     )
-                    if (thread.cwd.isNotBlank()) {
-                        Text(
-                            " · ${thread.cwd.substringAfterLast('/')}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CodexMuted,
-                            maxLines = 1,
-                        )
-                    }
                 }
             }
         }
@@ -563,9 +828,7 @@ private fun Conversation(
 ) {
     val listState = rememberLazyListState()
     val rows = remember(snapshot.selectedTurns) {
-        snapshot.selectedTurns.flatMap { turn ->
-            turn.items.map { turn to it }
-        }
+        buildConversationRows(snapshot.selectedTurns)
     }
     val hasEarlierTurns = snapshot.selectedThreadId?.let {
         snapshot.earlierTurnsCursorByThread[it] != null
@@ -573,9 +836,13 @@ private fun Conversation(
     val headerCount = (if (snapshot.selectedPlan != null) 1 else 0) +
         (if (snapshot.selectedGoal != null) 1 else 0) +
         (if (hasEarlierTurns) 1 else 0)
-    val lastTextLength = rows.lastOrNull()?.second?.let { it.text.length + it.detail.length } ?: 0
-    val lastRowId = rows.lastOrNull()?.second?.id
-    LaunchedEffect(lastRowId, lastTextLength, snapshot.selectedActiveTurnId, snapshot.selectedThreadId) {
+    val lastTextLength = when (val row = rows.lastOrNull()) {
+        is ConversationRow.Item -> row.item.text.length + row.item.detail.length
+        is ConversationRow.Error -> row.message.length
+        null -> 0
+    }
+    val lastRowKey = rows.lastOrNull()?.key
+    LaunchedEffect(lastRowKey, lastTextLength, snapshot.selectedActiveTurnId, snapshot.selectedThreadId) {
         if (rows.isNotEmpty()) {
             val target = (headerCount + rows.size - 1).coerceAtLeast(0)
             listState.animateScrollToItem(target)
@@ -623,12 +890,10 @@ private fun Conversation(
                 }
             }
         }
-        items(rows, key = { (turn, item) -> "${turn.id}:${item.id}" }) { (_, item) ->
-            ChatItemRow(item)
-        }
-        snapshot.selectedTurns.forEach { turn ->
-            if (turn.error != null) {
-                item(key = "error-${turn.id}") { TurnErrorCard(turn.error) }
+        items(rows, key = { it.key }) { row ->
+            when (row) {
+                is ConversationRow.Item -> ChatItemRow(row.item)
+                is ConversationRow.Error -> TurnErrorCard(row.message)
             }
         }
         if (snapshot.selectedActiveTurnId != null) {
@@ -824,7 +1089,13 @@ private fun relativeTime(epochSeconds: Long): String {
     }
 }
 
-private fun threadSubtitle(thread: ThreadInfo?, connection: String): String {
+private fun threadSubtitle(
+    thread: ThreadInfo?,
+    connection: String,
+    reconnecting: Boolean = false,
+    reconnectAttempt: Int = 0,
+): String {
+    if (reconnecting) return "Reconnecting to app-server · attempt $reconnectAttempt"
     if (connection != "connected") return "Disconnected from app-server"
     if (thread == null) return "New conversation"
     val flag = thread.activeFlags.firstOrNull()

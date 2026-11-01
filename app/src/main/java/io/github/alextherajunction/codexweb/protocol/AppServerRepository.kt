@@ -65,6 +65,7 @@ class AppServerRepository(
                     it.copy(
                         connection = "disconnected",
                         lastError = reason,
+                        pendingRequests = emptyList(),
                         diagnostics = it.appendDiagnostic("web-bridge.close", reason),
                     )
                 }
@@ -72,16 +73,25 @@ class AppServerRepository(
         }
     }
 
-    suspend fun connect(session: DeploymentSession) {
+    suspend fun connect(
+        session: DeploymentSession,
+        preferredThreadId: String? = null,
+        openMostRecentThread: Boolean = true,
+    ) {
         this.session = session
-        _state.value = AppServerSnapshot(
-            connection = "connecting",
-            deploymentUrl = session.deploymentUrl,
-            bridgeUrl = redactUrl(session.bridgeUrl),
-            userEmail = session.user.email,
-            homeDirectory = session.homeDirectory,
-            workspaceCwd = session.user.cwd.ifBlank { session.homeDirectory },
-        )
+        _state.update { current ->
+            current.copy(
+                connection = "connecting",
+                deploymentUrl = session.deploymentUrl,
+                bridgeUrl = redactUrl(session.bridgeUrl),
+                userEmail = session.user.email,
+                homeDirectory = session.homeDirectory,
+                workspaceCwd = current.workspaceCwd.ifBlank {
+                    session.user.cwd.ifBlank { session.homeDirectory }
+                },
+                lastError = null,
+            )
+        }
         rpc.connect(
             endpoint = session.bridgeUrl,
             cookieHeader = session.cookieHeader,
@@ -104,22 +114,26 @@ class AppServerRepository(
             fallbackConfig = serverModelConfigFromThreads(threads),
         )
 
-        _state.update {
+        _state.update { current ->
             val diagnostics = if (configRead.error == null) {
-                it.diagnostics
+                current.diagnostics
             } else {
-                it.appendDiagnostic(
+                current.appendDiagnostic(
                     "app-server.config/read",
                     "Effective config unavailable (${configRead.error}); using thread metadata when available.",
                 )
             }
-            it.copy(
+            val selectedModelId = current.selectedModelId.takeIf { selected ->
+                modelCatalog.models.any { it.id == selected }
+            } ?: modelCatalog.defaultModelId
+            current.copy(
                 connection = "connected",
                 models = modelCatalog.models,
-                selectedModelId = modelCatalog.defaultModelId,
+                selectedModelId = selectedModelId,
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
+                lastError = null,
                 diagnostics = diagnostics.appendDiagnostic(
                     "app-server.initialize",
                     "Connected to ${session.deploymentUrl} · Codex Web Android ${BuildConfig.VERSION_NAME}",
@@ -127,14 +141,26 @@ class AppServerRepository(
             )
         }
 
-        val first = threads.firstOrNull()
-        if (first != null) {
-            runCatching { openThread(first.id) }
+        val targetThreadId = preferredThreadId
+            ?: if (openMostRecentThread) threads.firstOrNull()?.id else null
+        if (targetThreadId != null) {
+            runCatching { openThread(targetThreadId) }
                 .onFailure { error ->
                     _state.update {
-                        it.withError("Could not open recent thread: ${error.message}")
+                        it.withError("Could not open thread: ${error.message}")
                     }
                 }
+        }
+    }
+
+    fun markDisconnected(reason: String) {
+        resumedThreads.clear()
+        _state.update {
+            it.copy(
+                connection = "disconnected",
+                lastError = reason,
+                diagnostics = it.appendDiagnostic("web-bridge.reconnect", reason),
+            )
         }
     }
 
@@ -170,6 +196,14 @@ class AppServerRepository(
         _state.update { current ->
             current.copy(threads = threads)
         }
+    }
+
+    suspend fun readDirectories(path: String): List<ServerDirectory> {
+        val normalizedPath = normalizeProjectPath(path).ifBlank { "/" }
+        val response = rpc.request("fs/readDirectory", buildJsonObject {
+            put("path", normalizedPath)
+        })
+        return parseServerDirectories(normalizedPath, response)
     }
 
     suspend fun openThread(threadId: String) {

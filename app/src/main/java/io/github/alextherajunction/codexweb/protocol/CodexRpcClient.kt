@@ -2,6 +2,7 @@ package io.github.alextherajunction.codexweb.protocol
 
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
@@ -40,8 +41,13 @@ class RpcException(
 ) : IOException(message)
 
 class CodexRpcClient(
-    private val httpClient: OkHttpClient = OkHttpClient(),
+    httpClient: OkHttpClient = OkHttpClient(),
 ) {
+    private val webSocketClient = httpClient.newBuilder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val nextId = AtomicLong(1)
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonElement>>()
@@ -112,15 +118,19 @@ class CodexRpcClient(
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val detail = t.message ?: "WebSocket failure"
+                    val status = response?.code
+                    val detail = buildString {
+                        append(t.message ?: "WebSocket failure")
+                        if (status != null) append(" (HTTP $status)")
+                    }
                     handleClosed(detail)
                     if (continuation.isActive) {
-                        continuation.resumeWith(Result.failure(RpcException(detail)))
+                        continuation.resumeWith(Result.failure(RpcException(detail, status)))
                     }
                 }
             }
 
-            val created = httpClient.newWebSocket(builder.build(), listener)
+            val created = webSocketClient.newWebSocket(builder.build(), listener)
             socket = created
             continuation.invokeOnCancellation {
                 created.cancel()

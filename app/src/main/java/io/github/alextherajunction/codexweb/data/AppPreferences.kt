@@ -21,8 +21,17 @@ class AppPreferences(context: Context) {
             }.apply()
         }
 
+    var lastProjectPath: String?
+        get() = preferences.getString(KEY_LAST_PROJECT, null)
+        set(value) {
+            preferences.edit().apply {
+                if (value.isNullOrBlank()) remove(KEY_LAST_PROJECT) else putString(KEY_LAST_PROJECT, value)
+            }.apply()
+        }
+
     companion object {
         private const val KEY_DEPLOYMENT_URL = "deployment_url"
         private const val KEY_LAST_MODEL = "last_model"
+        private const val KEY_LAST_PROJECT = "last_project"
     }
 }
