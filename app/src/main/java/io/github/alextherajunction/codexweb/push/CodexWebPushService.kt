@@ -26,7 +26,7 @@ class CodexWebPushService : PushService() {
         scope.launch {
             val result = PushRegistrationClient.register(this@CodexWebPushService, endpoint, instance)
             if (result.isSuccess) {
-                preferences.pushStatus = "Notifications ready through ${PushDistributors.label(
+                preferences.pushStatus = "Test notification delivered through ${PushDistributors.label(
                     this@CodexWebPushService,
                     PushDistributors.current(this@CodexWebPushService) ?: "the selected distributor",
                 )}"

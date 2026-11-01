@@ -102,7 +102,7 @@ fun NotificationsDialog(
                     .verticalScroll(rememberScrollState()),
             ) {
                 Text(
-                    "UnifiedPush delivers notifications for completed turns, achieved goals, approvals, and questions. Regular messages are not pushed.",
+                    "UnifiedPush delivers notifications for completed turns, achieved goals, approvals, and questions. Regular messages are not pushed. Registration sends one test notification to confirm delivery.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(16.dp))

@@ -50,8 +50,22 @@ object PushRegistrationClient {
                 }
             })
         }
-        if ((result as? JsonObject)?.get("registered")?.jsonPrimitive?.contentOrNull != "true") {
+        val response = result as? JsonObject
+        if (response?.get("registered")?.jsonPrimitive?.contentOrNull != "true") {
             throw IOException("Codex Web did not confirm the push subscription")
+        }
+        val test = response["testNotification"] as? JsonObject
+        if (test?.get("delivered")?.jsonPrimitive?.contentOrNull != "true") {
+            val reason = test?.get("error")?.jsonPrimitive?.contentOrNull?.trim()
+                ?.take(200)
+                ?.takeIf { it.isNotEmpty() }
+            throw IOException(
+                if (reason == null) {
+                    "Codex Web did not deliver a test notification"
+                } else {
+                    "Codex Web could not deliver a test notification: $reason"
+                },
+            )
         }
     }
 

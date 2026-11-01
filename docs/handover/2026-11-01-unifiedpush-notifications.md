@@ -7,7 +7,7 @@ Cross-link: server counterpart at `codex-web/docs/handover/2026-11-01-unifiedpus
 - `CodexWebPushService` extends the UnifiedPush connector `PushService` and receives endpoint, message, registration-failure, and unregistration callbacks.
 - `PushDistributors` discovers installed distributors, persists a per-install UUID, and starts/stops UnifiedPush registration.
 - `PushRegistrationClient` reuses the WebView-authenticated session cookie and the authenticated Codex Web bridge to call `codexWeb/push/config`, `codexWeb/push/register`, and `codexWeb/push/unregister`.
-- `PushPayloadParser` accepts only version 1 payloads with the five supported event kinds and non-empty title/body fields.
+- `PushPayloadParser` accepts only version 1 payloads with the six supported event kinds and non-empty title/body fields.
 - `PushNotifier` creates the `Codex events` high-importance channel and opens the target thread when a notification is tapped.
 - `CodexWebViewModel` owns distributor selection, permission-gated enablement, retry, reconnect re-registration, sign-out cleanup, and notification deep-link routing.
 
@@ -18,6 +18,7 @@ Cross-link: server counterpart at `codex-web/docs/handover/2026-11-01-unifiedpus
 3. The distributor returns an endpoint and Web Push key set through `onNewEndpoint`.
 4. The app sends those values over the authenticated bridge with the instance UUID.
 5. If the distributor requires VAPID, `onRegistrationFailed(VAPID_REQUIRED)` fetches the public key with `codexWeb/push/config` and retries registration.
+6. Codex Web sends a `test` push before confirming registration. The app reports notifications as ready only when that test is accepted; a failed test is shown as the registration error.
 
 The server identity comes from the existing bridge/broker session. No separate push credential is introduced.
 
@@ -34,3 +35,5 @@ The server identity comes from the existing bridge/broker session. No separate p
 - `./gradlew assembleRelease`
 
 Merged manifest verification confirms `POST_NOTIFICATIONS` and the `org.unifiedpush.android.connector.PUSH_EVENT` service action.
+
+Live Mozilla Push registration initially failed on the server with `ERR_INVALID_IP_ADDRESS` because the custom HTTPS agent returned one address when Node requested all DNS results. The server fix is covered by `server/tests/push-transport.test.ts`; Android now also requires the registration-time `test` delivery result.

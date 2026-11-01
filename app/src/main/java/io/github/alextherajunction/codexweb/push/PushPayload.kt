@@ -24,6 +24,7 @@ object PushPayloadParser {
         "goal_completed",
         "approval_required",
         "question_required",
+        "test",
     )
 
     fun parse(content: ByteArray): PushPayload? {

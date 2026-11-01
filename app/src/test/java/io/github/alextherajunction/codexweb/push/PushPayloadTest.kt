@@ -41,6 +41,12 @@ class PushPayloadTest {
                 """{"kind":"question_required","title":"Question","body":"Choose one"}""".toByteArray(),
             )?.kind,
         )
+        assertEquals(
+            "test",
+            PushPayloadParser.parse(
+                """{"kind":"test","title":"Notifications are working","body":"Test delivery confirmed."}""".toByteArray(),
+            )?.kind,
+        )
     }
 
     @Test
