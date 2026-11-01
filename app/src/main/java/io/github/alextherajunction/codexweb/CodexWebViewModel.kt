@@ -15,6 +15,7 @@ import io.github.alextherajunction.codexweb.protocol.AppServerRepository
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
+import io.github.alextherajunction.codexweb.protocol.PermissionProfile
 import io.github.alextherajunction.codexweb.protocol.RpcException
 import io.github.alextherajunction.codexweb.protocol.ServerDirectory
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
@@ -241,6 +242,19 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         if (effort !in model.reasoningEfforts) return
         preferences.lastReasoningEffort = effort
         repository.selectReasoningEffort(effort)
+    }
+
+    fun updatePermissionProfile(profile: PermissionProfile) {
+        val repository = repository ?: return
+        repository.selectPermissionProfile(profile)
+        val threadId = repository.state.value.selectedThreadId ?: return
+        viewModelScope.launch {
+            try {
+                repository.updateThreadPermissions(threadId, profile)
+            } catch (error: Exception) {
+                _state.update { it.copy(error = error.message ?: "Could not update permissions") }
+            }
+        }
     }
 
     fun beginLogin() {

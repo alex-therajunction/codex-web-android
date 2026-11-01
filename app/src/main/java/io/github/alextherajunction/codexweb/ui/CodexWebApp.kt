@@ -67,6 +67,7 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onLoadEarlierTurns = viewModel::loadEarlierTurns,
                 onModelSelected = viewModel::updateModel,
                 onReasoningEffortSelected = viewModel::updateReasoningEffort,
+                onPermissionSelected = viewModel::updatePermissionProfile,
                 onComposerChange = viewModel::updateComposer,
                 onSend = viewModel::sendMessage,
                 onInterrupt = viewModel::interrupt,

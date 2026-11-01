@@ -10,7 +10,6 @@ private val knownNoOpNotifications = setOf(
     "mcpServer/oauthLogin/completed",
     "account/login/completed",
     "account/rateLimits/updated",
-    "thread/settings/updated",
     "remoteControl/status/changed",
     "thread/realtime/started",
     "thread/realtime/closed",
@@ -53,6 +52,17 @@ fun AppServerSnapshot.applyNotification(notification: RpcNotification): AppServe
                             if (it.id == threadId) it.copy(name = params.string("threadName")) else it
                         },
                     )
+                }
+            }
+            "thread/settings/updated" -> {
+                val threadId = params.string("threadId")
+                val settings = params.obj("threadSettings")
+                if (threadId == null || settings == null) {
+                    copy()
+                } else if (selectedThreadId == threadId) {
+                    copy(selectedPermissionProfile = permissionProfileFromRuntimeSettings(settings))
+                } else {
+                    copy()
                 }
             }
             "turn/started" -> applyTurn(params, completed = false)

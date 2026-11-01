@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
@@ -40,6 +41,10 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +79,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -83,12 +89,12 @@ import io.github.alextherajunction.codexweb.AppUiState
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
+import io.github.alextherajunction.codexweb.protocol.PermissionProfile
 import io.github.alextherajunction.codexweb.protocol.ProjectGroup
 import io.github.alextherajunction.codexweb.protocol.ThreadInfo
 import io.github.alextherajunction.codexweb.protocol.TurnInfo
 import io.github.alextherajunction.codexweb.protocol.groupThreadsByProjects
 import io.github.alextherajunction.codexweb.protocol.normalizeProjectPath
-import io.github.alextherajunction.codexweb.protocol.projectDisplayName
 import io.github.alextherajunction.codexweb.ui.components.ChatItemRow
 import io.github.alextherajunction.codexweb.ui.components.ContextChips
 import io.github.alextherajunction.codexweb.ui.components.DiagnosticsDialog
@@ -123,6 +129,7 @@ fun MainScreen(
     onLoadEarlierTurns: () -> Unit,
     onModelSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
+    onPermissionSelected: (PermissionProfile) -> Unit,
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
@@ -390,11 +397,6 @@ fun MainScreen(
                 ContextChips(
                     cwd = state.cwdInput.ifBlank { snapshot.workspaceCwd },
                     usage = snapshot.selectedUsage,
-                    model = selectedModel?.displayName?.let { modelName ->
-                        selectedEffort?.takeIf { it.isNotBlank() }
-                            ?.let { "$modelName · ${effortLabel(it)}" }
-                            ?: modelName
-                    },
                     onCwdClick = {
                         if (isNewChat) showProjectPicker = true else showCwdDialog = true
                     },
@@ -427,23 +429,17 @@ fun MainScreen(
                         )
                     }
                 }
-                if (isNewChat) {
-                    ProjectSelectorBar(
-                        project = currentProject,
-                        onClick = { showProjectPicker = true },
-                    )
-                }
+                PermissionSelectorBar(
+                    profile = snapshot.selectedPermissionProfile,
+                    onSelected = onPermissionSelected,
+                )
                 Composer(
                     value = state.composerText,
-                    cwd = state.cwdInput.ifBlank { snapshot.workspaceCwd },
                     sending = state.sending,
                     activeTurnId = activeTurnId,
                     onValueChange = onComposerChange,
                     onSend = onSend,
                     onInterrupt = onInterrupt,
-                    onCwdClick = {
-                        if (isNewChat) showProjectPicker = true else showCwdDialog = true
-                    },
                 )
             }
         }
@@ -551,44 +547,182 @@ private fun ReconnectBanner(
 }
 
 @Composable
-private fun ProjectSelectorBar(
-    project: String,
-    onClick: () -> Unit,
+private fun PermissionSelectorBar(
+    profile: PermissionProfile,
+    onSelected: (PermissionProfile) -> Unit,
 ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clickable(onClick = onClick),
-        color = CodexSurface,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, CodexOutline),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    var expanded by remember { mutableStateOf(false) }
+    var pendingFullAccess by remember { mutableStateOf(false) }
+    val selected = permissionChoice(profile)
+
+    Box {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .clickable { expanded = true },
+            color = CodexSurface,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(
+                1.dp,
+                if (profile == PermissionProfile.FULL_ACCESS) {
+                    CodexDanger.copy(alpha = 0.65f)
+                } else {
+                    CodexOutline
+                },
+            ),
         ) {
-            Icon(Icons.Rounded.Folder, null, tint = CodexLime, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    projectDisplayName(project),
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    selected.icon,
+                    null,
+                    tint = permissionTint(profile),
+                    modifier = Modifier.size(20.dp),
                 )
-                Text(
-                    project.ifBlank { "Choose a server folder for this conversation" },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CodexMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "PERMISSION",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CodexMuted,
+                    )
+                    Text(selected.label, style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        selected.description,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CodexMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Icon(
+                    Icons.Rounded.ChevronRight,
+                    null,
+                    tint = CodexMuted,
+                    modifier = Modifier.size(18.dp),
                 )
             }
-            Text("Change", color = CodexLime, style = MaterialTheme.typography.labelMedium)
-            Icon(Icons.Rounded.ChevronRight, null, tint = CodexLime, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            permissionChoices().forEach { choice ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(choice.label)
+                            Text(
+                                choice.description,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = CodexMuted,
+                            )
+                        }
+                    },
+                    leadingIcon = {
+                        Icon(
+                            choice.icon,
+                            null,
+                            tint = permissionTint(choice.profile),
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
+                    trailingIcon = {
+                        if (choice.profile == profile) {
+                            Icon(Icons.Rounded.Check, null, tint = CodexLime)
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        if (choice.profile == PermissionProfile.FULL_ACCESS &&
+                            profile != PermissionProfile.FULL_ACCESS
+                        ) {
+                            pendingFullAccess = true
+                        } else {
+                            onSelected(choice.profile)
+                        }
+                    },
+                )
+            }
         }
     }
+
+    if (pendingFullAccess) {
+        AlertDialog(
+            onDismissRequest = { pendingFullAccess = false },
+            title = { Text("Enable Full Access?") },
+            text = {
+                Text(
+                    "Codex will be able to run commands and change files without asking, " +
+                        "including outside this project and on the internet. Only use this " +
+                        "with a project and server you trust.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingFullAccess = false
+                        onSelected(PermissionProfile.FULL_ACCESS)
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = CodexDanger),
+                ) {
+                    Text("Enable Full Access")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingFullAccess = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+private data class PermissionChoice(
+    val profile: PermissionProfile,
+    val label: String,
+    val description: String,
+    val icon: ImageVector,
+)
+
+private fun permissionChoices(): List<PermissionChoice> = listOf(
+    PermissionChoice(
+        profile = PermissionProfile.REQUEST_APPROVAL,
+        label = "Ask for Approval",
+        description = "Ask before sandbox escapes, network access, or protected file changes",
+        icon = Icons.Rounded.Lock,
+    ),
+    PermissionChoice(
+        profile = PermissionProfile.AUTO_APPROVAL,
+        label = "Auto Approval",
+        description = "Automatically review requests and ask only for risky operations",
+        icon = Icons.Rounded.VerifiedUser,
+    ),
+    PermissionChoice(
+        profile = PermissionProfile.FULL_ACCESS,
+        label = "Full Access",
+        description = "Allow all commands, network access, and file changes without approval",
+        icon = Icons.Rounded.Warning,
+    ),
+    PermissionChoice(
+        profile = PermissionProfile.CONFIG,
+        label = "Custom (config.toml)",
+        description = "Use the permission profile configured on the server",
+        icon = Icons.Rounded.Tune,
+    ),
+)
+
+private fun permissionChoice(profile: PermissionProfile): PermissionChoice =
+    permissionChoices().firstOrNull { it.profile == profile } ?: permissionChoices().first()
+
+private fun permissionTint(profile: PermissionProfile): Color = when (profile) {
+    PermissionProfile.FULL_ACCESS -> CodexDanger
+    PermissionProfile.AUTO_APPROVAL -> CodexLime
+    PermissionProfile.CONFIG -> CodexMuted
+    PermissionProfile.REQUEST_APPROVAL -> CodexLime
 }
 
 @Composable
@@ -1034,13 +1168,11 @@ private fun WelcomePanel(snapshot: AppServerSnapshot, modifier: Modifier = Modif
 @Composable
 private fun Composer(
     value: String,
-    cwd: String,
     sending: Boolean,
     activeTurnId: String?,
     onValueChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
-    onCwdClick: () -> Unit,
 ) {
     Surface(
         color = Color(0xFF12150F),
@@ -1050,20 +1182,6 @@ private fun Composer(
             .navigationBarsPadding(),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onCwdClick, contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp)) {
-                    Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(15.dp), tint = CodexMuted)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        cwd.ifBlank { "Server directory" },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CodexMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.width(240.dp),
-                    )
-                }
-            }
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = value,

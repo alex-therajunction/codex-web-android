@@ -344,6 +344,8 @@ data class AppServerSnapshot(
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String = "",
     val selectedReasoningEffort: String? = null,
+    val selectedPermissionProfile: PermissionProfile = PermissionProfile.REQUEST_APPROVAL,
+    val defaultPermissionProfile: PermissionProfile = PermissionProfile.REQUEST_APPROVAL,
     val threads: List<ThreadInfo> = emptyList(),
     val selectedThreadId: String? = null,
     val turnsByThread: Map<String, List<TurnInfo>> = emptyMap(),

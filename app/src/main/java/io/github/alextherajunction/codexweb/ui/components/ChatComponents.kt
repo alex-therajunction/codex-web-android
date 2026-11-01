@@ -446,7 +446,6 @@ fun GoalSummaryCard(goal: GoalInfo) {
 fun ContextChips(
     cwd: String,
     usage: UsageInfo?,
-    model: String?,
     onCwdClick: () -> Unit,
 ) {
     Row(
@@ -487,17 +486,6 @@ fun ContextChips(
                         },
                     )
                 },
-                colors = AssistChipDefaults.assistChipColors(
-                    labelColor = CodexMuted,
-                    containerColor = CodexSurface.copy(alpha = 0.6f),
-                ),
-                border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = CodexOutline),
-            )
-        }
-        if (!model.isNullOrBlank()) {
-            AssistChip(
-                onClick = {},
-                label = { Text(model, maxLines = 1) },
                 colors = AssistChipDefaults.assistChipColors(
                     labelColor = CodexMuted,
                     containerColor = CodexSurface.copy(alpha = 0.6f),

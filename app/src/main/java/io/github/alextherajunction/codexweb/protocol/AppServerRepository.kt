@@ -38,6 +38,7 @@ class AppServerRepository(
     private val sendMutex = Mutex()
     private val resumedThreads = mutableSetOf<String>()
     private var session: DeploymentSession? = null
+    private var effectivePermissionConfig = EffectivePermissionConfig()
 
     init {
         scope.launch {
@@ -109,6 +110,7 @@ class AppServerRepository(
         val threadsResponse = rpc.request("thread/list", threadListParams())
         val threads = parseThreads(threadsResponse)
         val configRead = readEffectiveConfig()
+        effectivePermissionConfig = parseEffectivePermissionConfig(configRead.response)
         val modelCatalog = resolveServerModelCatalog(
             modelsResponse = modelsResponse,
             configResponse = configRead.response,
@@ -136,6 +138,12 @@ class AppServerRepository(
                 models = modelCatalog.models,
                 selectedModelId = selectedModelId,
                 selectedReasoningEffort = selectedReasoningEffort,
+                selectedPermissionProfile = if (current.selectedThreadId == null) {
+                    effectivePermissionConfig.defaultProfile
+                } else {
+                    current.selectedPermissionProfile
+                },
+                defaultPermissionProfile = effectivePermissionConfig.defaultProfile,
                 codexAccount = account.first,
                 requiresOpenaiAuth = account.second,
                 threads = threads,
@@ -198,6 +206,10 @@ class AppServerRepository(
         _state.update { it.copy(selectedReasoningEffort = effort) }
     }
 
+    fun selectPermissionProfile(profile: PermissionProfile) {
+        _state.update { it.copy(selectedPermissionProfile = profile) }
+    }
+
     fun updateWorkspaceCwd(path: String) {
         _state.update { it.copy(workspaceCwd = path.trim()) }
     }
@@ -205,7 +217,11 @@ class AppServerRepository(
     fun startNewChat() {
         resumedThreads.clear()
         _state.update {
-            it.copy(selectedThreadId = null, lastError = null)
+            it.copy(
+                selectedThreadId = null,
+                selectedPermissionProfile = it.defaultPermissionProfile,
+                lastError = null,
+            )
         }
     }
 
@@ -233,7 +249,9 @@ class AppServerRepository(
                 put("excludeTurns", true)
             })
             resumedThreads += threadId
-            reconcileModelWithThread(resumeResponse.asObjectOrNull())
+            val runtimeSettings = resumeResponse.asObjectOrNull()
+            reconcileModelWithThread(runtimeSettings)
+            reconcilePermissionWithThread(runtimeSettings)
         } catch (error: Exception) {
             _state.update {
                 it.copy(
@@ -290,7 +308,9 @@ class AppServerRepository(
         if (message.isEmpty()) return
         sendMutex.withLock {
             val current = _state.value
-            val threadId = current.selectedThreadId ?: startThread(cwd, model, effort)
+            val permissionProfile = current.selectedPermissionProfile
+            val threadId = current.selectedThreadId
+                ?: startThread(cwd, model, effort, permissionProfile)
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
 
             if (threadId !in resumedThreads) {
@@ -313,6 +333,7 @@ class AppServerRepository(
                 put("cwd", normalizedCwd)
                 if (model.isNotBlank()) put("model", model)
                 if (!effort.isNullOrBlank()) put("effort", effort)
+                putTurnPermissionOptions(permissionProfile, normalizedCwd, effectivePermissionConfig)
             }
             val response = rpc.request("turn/start", params)
             val turn = response.asObjectOrNull()?.obj("turn")
@@ -330,6 +351,16 @@ class AppServerRepository(
                 }
             }
         }
+    }
+
+    suspend fun updateThreadPermissions(
+        threadId: String,
+        profile: PermissionProfile,
+    ) {
+        rpc.request("thread/settings/update", buildJsonObject {
+            put("threadId", threadId)
+            putThreadPermissionUpdateOptions(profile, effectivePermissionConfig)
+        })
     }
 
     suspend fun interrupt(threadId: String, turnId: String) {
@@ -437,7 +468,18 @@ class AppServerRepository(
         }
     }
 
-    private suspend fun startThread(cwd: String, model: String, effort: String?): String {
+    private fun reconcilePermissionWithThread(response: JsonObject?) {
+        if (response == null) return
+        val profile = permissionProfileFromRuntimeSettings(response)
+        _state.update { it.copy(selectedPermissionProfile = profile) }
+    }
+
+    private suspend fun startThread(
+        cwd: String,
+        model: String,
+        effort: String?,
+        permissionProfile: PermissionProfile,
+    ): String {
         val params = buildJsonObject {
             val normalizedCwd = cwd.trim().ifBlank { _state.value.homeDirectory }
             if (normalizedCwd.isNotBlank()) put("cwd", normalizedCwd)
@@ -445,10 +487,12 @@ class AppServerRepository(
             if (!effort.isNullOrBlank()) {
                 putJsonObject("config") { put("model_reasoning_effort", effort) }
             }
+            putThreadPermissionOptions(permissionProfile)
             put("serviceName", "codex_web_android")
             put("threadSource", "codex_web_android")
         }
         val response = rpc.request("thread/start", params)
+        reconcilePermissionWithThread(response.asObjectOrNull())
         val threadJson = response.asObjectOrNull()?.obj("thread")
             ?: throw RpcException("thread/start response did not include a thread")
         val thread = ThreadInfo.fromJson(threadJson)

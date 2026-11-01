@@ -19,6 +19,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
 - Model picker from the server's `model/list` catalog and `config/read` model/provider settings. If `config/read` fails, the app retries, then uses thread model metadata; it never falls back to an unverified OpenAI-only catalog.
 - Interrupt active turns through `turn/interrupt`.
+- Permission selector matching Codex Web: Ask for Approval, Auto Approval, Full Access, and the server-configured custom profile. Full Access requires confirmation and sends the app-server's `never`/`danger-full-access` settings.
 - Command, file-change, and permission approval cards using the exact app-server response schemas.
 - User-input question responses and MCP request cancellation.
 - Plan, goal, token usage, account, and connection state from app-server notifications.
@@ -134,7 +135,7 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 - WebView file/content access is disabled and mixed content is rejected.
 - SSL certificate errors are not bypassed. Use a trusted certificate for HTTPS deployments.
 - The app does not modify `codex-core`; it uses the standard Codex Web bridge.
-- Approvals are always shown to the user. The app does not auto-approve commands or permission requests.
+- The default permission profile asks before sandbox escapes, network access, or protected file changes. Auto Approval delegates review to the app-server's risk reviewer, and Full Access disables approval prompts for the selected thread after an explicit warning.
 - MCP elicitation forms are not implemented in the native UI; the request is surfaced and can be cancelled. Command/file/permission approvals and Codex user-input questions have native UI.
 
 ## Project layout
