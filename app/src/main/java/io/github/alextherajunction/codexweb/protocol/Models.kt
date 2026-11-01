@@ -243,6 +243,7 @@ data class TurnInfo(
     val startedAt: Long? = null,
     val completedAt: Long? = null,
     val items: List<ChatItem> = emptyList(),
+    val diff: String = "",
 ) {
     companion object {
         fun fromJson(json: JsonObject): TurnInfo {
@@ -429,17 +430,11 @@ internal fun parseChatItem(json: JsonObject): ChatItem {
         }
         "fileChange" -> {
             val status = json.string("status").orEmpty()
-            val changes = json.array("changes")
-                ?.mapNotNull { it as? JsonObject }
-                ?.joinToString("\n") { change ->
-                    val path = change.string("path").orEmpty()
-                    val kind = change.string("kind").orEmpty()
-                    val diff = change.string("diff").orEmpty()
-                    listOf(path, kind.takeIf { it.isNotBlank() }?.let { "($it)" }, diff)
-                        .filterNotNull().filter { it.isNotBlank() }.joinToString(" ")
-                }
-                .orEmpty()
-            item(title = "File changes", detail = changes, status = status)
+            item(
+                title = "File changes",
+                detail = formatFileChanges(json.array("changes")),
+                status = status,
+            )
         }
         "mcpToolCall" -> {
             val status = json.string("status").orEmpty()
@@ -495,6 +490,37 @@ internal fun parseChatItem(json: JsonObject): ChatItem {
             kind = "unknown",
         )
     }
+}
+
+internal fun formatFileChanges(changes: JsonArray?): String = changes
+    ?.mapNotNull { it as? JsonObject }
+    ?.mapNotNull { change ->
+        val path = change.string("path") ?: return@mapNotNull null
+        val kind = change.obj("kind")?.string("type").orEmpty()
+        val diff = change.string("diff").orEmpty()
+        buildString {
+            append("diff --git a/").append(path).append(" b/").append(path)
+            if (kind.isNotBlank()) append(" (").append(kind).append(")")
+            if (diff.isNotBlank()) {
+                append('\n')
+                append(normalizeFileDiff(diff, kind))
+            }
+        }
+    }
+    ?.joinToString("\n")
+    .orEmpty()
+
+private fun normalizeFileDiff(diff: String, kind: String): String {
+    val hasDiffMarkers = diff.lineSequence().any { line ->
+        line.startsWith("@@") || line.startsWith("--- ") || line.startsWith("+++ ")
+    }
+    val prefix = when {
+        hasDiffMarkers -> ""
+        kind == "add" -> "+"
+        kind == "delete" -> "-"
+        else -> ""
+    }
+    return diff.trimEnd().lineSequence().joinToString("\n") { prefix + it }
 }
 
 internal fun parseUsage(json: JsonObject): UsageInfo {

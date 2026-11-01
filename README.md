@@ -17,6 +17,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Streaming assistant text from `item/agentMessage/delta`.
 - Failed Turn errors render immediately after that Turn rather than at the end of the conversation.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
+- Colorized per-Turn unified diffs from `turn/diff/updated` and `item/fileChange/patchUpdated`, with file and line-change counts.
 - Model picker from the server's `model/list` catalog and `config/read` model/provider settings. If `config/read` fails, the app retries, then uses thread model metadata; it never falls back to an unverified OpenAI-only catalog.
 - Interrupt active turns through `turn/interrupt`.
 - Permission selector matching Codex Web: Ask for Approval, Auto Approval, Full Access, and the server-configured custom profile. Full Access requires confirmation and sends the app-server's `never`/`danger-full-access` settings.

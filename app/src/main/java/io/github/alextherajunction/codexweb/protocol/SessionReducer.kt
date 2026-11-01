@@ -76,7 +76,8 @@ fun AppServerSnapshot.applyNotification(notification: RpcNotification): AppServe
             "item/reasoning/summaryTextDelta" -> appendToItem(params, "reasoning", "delta")
             "item/reasoning/textDelta" -> appendToItem(params, "reasoning", "delta")
             "item/plan/delta" -> appendToItem(params, "plan", "delta")
-            "item/fileChange/patchUpdated" -> upsertRawItem(params)
+            "item/fileChange/patchUpdated" -> applyFileChangePatch(params)
+            "turn/diff/updated" -> applyTurnDiff(params)
             "turn/plan/updated" -> {
                 val threadId = params.string("threadId")
                 if (threadId == null) diagnosed(notification)
@@ -167,8 +168,9 @@ fun AppServerSnapshot.withThread(thread: ThreadInfo): AppServerSnapshot {
 
 fun AppServerSnapshot.hydrateThread(thread: ThreadInfo): AppServerSnapshot {
     val activeTurnId = thread.turns.lastOrNull { it.status == "inProgress" }?.id
+    val turns = preserveTurnDiffs(thread.turns, turnsByThread[thread.id].orEmpty())
     return withThread(thread).copy(
-        turnsByThread = turnsByThread + (thread.id to thread.turns),
+        turnsByThread = turnsByThread + (thread.id to turns),
         activeTurnByThread = if (activeTurnId != null) {
             activeTurnByThread + (thread.id to activeTurnId)
         } else {
@@ -213,6 +215,7 @@ private fun AppServerSnapshot.applyTurn(
     val previous = existing.firstOrNull { it.id == turn.id }
     val merged = turn.copy(
         items = if (turn.items.isEmpty()) previous?.items.orEmpty() else turn.items,
+        diff = turn.diff.ifBlank { previous?.diff.orEmpty() },
     )
     val nextTurns = if (previous == null) existing + merged else existing.map {
         if (it.id == merged.id) merged else it
@@ -251,17 +254,60 @@ private fun AppServerSnapshot.upsertNotificationItem(
     return putItem(threadId, turnId, item)
 }
 
-private fun AppServerSnapshot.upsertRawItem(params: JsonObject): AppServerSnapshot {
-    val threadId = params.string("threadId") ?: return diagnosed(RpcNotification("item/fileChange/patchUpdated", params))
-    val turnId = params.string("turnId")
-    val itemJson = params.obj("item") ?: return diagnosed(RpcNotification("item/fileChange/patchUpdated", params))
-    return putItem(threadId, turnId, parseChatItem(itemJson))
+private fun AppServerSnapshot.applyFileChangePatch(params: JsonObject): AppServerSnapshot {
+    val threadId = params.string("threadId") ?: return diagnosed(
+        RpcNotification("item/fileChange/patchUpdated", params),
+    )
+    val itemId = params.string("itemId") ?: return diagnosed(
+        RpcNotification("item/fileChange/patchUpdated", params),
+    )
+    val changes = params.array("changes") ?: return diagnosed(
+        RpcNotification("item/fileChange/patchUpdated", params),
+    )
+    return updateTurnItem(threadId, params.string("turnId"), itemId) { existing ->
+        (existing ?: ChatItem(
+            id = itemId,
+            kind = "fileChange",
+            title = "File changes",
+            status = "inProgress",
+        )).copy(
+            detail = formatFileChanges(changes),
+            isStreaming = true,
+        )
+    }
+}
+
+private fun AppServerSnapshot.applyTurnDiff(params: JsonObject): AppServerSnapshot {
+    val threadId = params.string("threadId") ?: return diagnosed(RpcNotification("turn/diff/updated", params))
+    val turnId = params.string("turnId") ?: return diagnosed(RpcNotification("turn/diff/updated", params))
+    val diff = params.string("diff") ?: return diagnosed(RpcNotification("turn/diff/updated", params))
+    val turns = turnsByThread[threadId].orEmpty().toMutableList()
+    val index = turns.indexOfFirst { it.id == turnId }
+    if (index >= 0) {
+        turns[index] = turns[index].copy(diff = diff)
+    } else {
+        turns.add(TurnInfo(id = turnId, status = "inProgress", diff = diff))
+    }
+    return copy(turnsByThread = turnsByThread + (threadId to turns))
 }
 
 private fun AppServerSnapshot.putItem(
     threadId: String,
     turnId: String?,
     item: ChatItem,
+): AppServerSnapshot = updateTurnItem(threadId, turnId, item.id) { existing ->
+    if (existing != null && item.terminalInput.isBlank()) {
+        item.copy(terminalInput = existing.terminalInput)
+    } else {
+        item
+    }
+}
+
+private fun AppServerSnapshot.updateTurnItem(
+    threadId: String,
+    turnId: String?,
+    itemId: String,
+    update: (ChatItem?) -> ChatItem,
 ): AppServerSnapshot {
     val turns = turnsByThread[threadId].orEmpty().toMutableList()
     val effectiveTurnId = turnId ?: turns.lastOrNull()?.id ?: "unknown"
@@ -273,13 +319,9 @@ private fun AppServerSnapshot.putItem(
             .also { turns.add(it) }
     }
     val turnIndex = turns.indexOfFirst { it.id == target.id }
-    val existingItem = target.items.firstOrNull { it.id == item.id }
-    val mergedItem = if (existingItem != null && item.terminalInput.isBlank()) {
-        item.copy(terminalInput = existingItem.terminalInput)
-    } else {
-        item
-    }
-    val items = target.items.filterNot { it.id == item.id } + mergedItem
+    val existingItem = target.items.firstOrNull { it.id == itemId }
+    val updatedItem = update(existingItem)
+    val items = target.items.filterNot { it.id == itemId } + updatedItem
     turns[turnIndex] = target.copy(items = items)
     return copy(
         turnsByThread = turnsByThread + (threadId to turns),
@@ -287,6 +329,14 @@ private fun AppServerSnapshot.putItem(
             if (it.id == threadId) it.copy(updatedAt = System.currentTimeMillis() / 1000) else it
         }.sortedByDescending { it.updatedAt },
     )
+}
+
+private fun preserveTurnDiffs(incoming: List<TurnInfo>, existing: List<TurnInfo>): List<TurnInfo> {
+    if (incoming.isEmpty() || existing.isEmpty()) return incoming
+    val diffsByTurn = existing.associate { it.id to it.diff }
+    return incoming.map { turn ->
+        if (turn.diff.isBlank()) turn.copy(diff = diffsByTurn[turn.id].orEmpty()) else turn
+    }
 }
 
 private fun AppServerSnapshot.appendToItem(

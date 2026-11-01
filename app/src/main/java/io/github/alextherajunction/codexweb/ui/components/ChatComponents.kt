@@ -115,7 +115,7 @@ fun ChatItemRow(item: ChatItem) {
             status = item.status,
             defaultExpanded = item.status == "failed" || item.status == "declined",
         ) {
-            CodeText(item.detail)
+            DiffBlock(item.detail)
         }
         "plan" -> ExpandableToolCard(
             icon = Icons.Rounded.CheckCircle,
@@ -447,6 +447,7 @@ fun ContextChips(
     cwd: String,
     usage: UsageInfo?,
     onCwdClick: () -> Unit,
+    accessControl: @Composable () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -474,6 +475,7 @@ fun ContextChips(
             ),
             border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = CodexOutline),
         )
+        Box { accessControl() }
         if (usage != null) {
             AssistChip(
                 onClick = {},

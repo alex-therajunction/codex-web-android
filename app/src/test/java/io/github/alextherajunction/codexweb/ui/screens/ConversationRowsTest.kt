@@ -60,4 +60,31 @@ class ConversationRowsTest {
             rows.map { it.key },
         )
     }
+
+    @Test
+    fun `uses the aggregate diff instead of successful file change items`() {
+        val rows = buildConversationRows(
+            listOf(
+                TurnInfo(
+                    id = "turn-1",
+                    status = "completed",
+                    diff = "diff --git a/src/app.ts b/src/app.ts\n+new\n",
+                    items = listOf(
+                        ChatItem(id = "message-1", kind = "agentMessage", text = "done"),
+                        ChatItem(id = "change-1", kind = "fileChange", detail = "old detail", status = "completed"),
+                        ChatItem(id = "change-2", kind = "fileChange", status = "failed"),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("turn-1:item:message-1", "turn-1:item:change-2", "turn-1:diff"),
+            rows.map { it.key },
+        )
+        assertEquals(
+            "diff --git a/src/app.ts b/src/app.ts\n+new\n",
+            rows.filterIsInstance<ConversationRow.Diff>().single().diff,
+        )
+    }
 }

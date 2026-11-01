@@ -130,6 +130,62 @@ class SessionReducerTest {
         assertTrue(state.diagnostics.none { it.method.startsWith("unhandled:") })
     }
 
+    @Test
+    fun `turn diff updates are stored and retained when the turn completes`() {
+        val diff = "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n"
+        val escapedDiff = diff.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        var state = AppServerSnapshot(
+            selectedThreadId = "t1",
+            turnsByThread = mapOf("t1" to listOf(TurnInfo(id = "turn1", status = "inProgress"))),
+        ).applyNotification(
+            notification(
+                "turn/diff/updated",
+                """{"threadId":"t1","turnId":"turn1","diff":"$escapedDiff"}""",
+            ),
+        )
+        state = state.applyNotification(
+            notification(
+                "turn/completed",
+                """{"threadId":"t1","turn":{"id":"turn1","status":"completed","items":[]}}""",
+            ),
+        )
+
+        assertEquals(diff, state.selectedTurns.single().diff)
+        assertTrue(state.diagnostics.none { it.method.startsWith("unhandled:") })
+    }
+
+    @Test
+    fun `file change patch updates enrich the matching item and turn diff`() {
+        var state = AppServerSnapshot(
+            selectedThreadId = "t1",
+            turnsByThread = mapOf("t1" to listOf(TurnInfo(id = "turn1", status = "inProgress"))),
+        )
+        state = state.applyNotification(
+            notification(
+                "item/started",
+                """{"threadId":"t1","turnId":"turn1","item":{"type":"fileChange","id":"patch1","changes":[],"status":"inProgress"}}""",
+            ),
+        )
+        state = state.applyNotification(
+            notification(
+                "turn/diff/updated",
+                """{"threadId":"t1","turnId":"turn1","diff":"diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n"}""",
+            ),
+        )
+        state = state.applyNotification(
+            notification(
+                "item/fileChange/patchUpdated",
+                """{"threadId":"t1","turnId":"turn1","itemId":"patch1","changes":[{"path":"src/app.ts","kind":{"type":"update","move_path":null},"diff":"--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new"}]}""",
+            ),
+        )
+
+        val item = state.selectedTurns.single().items.single()
+        assertTrue(item.detail.contains("diff --git a/src/app.ts b/src/app.ts (update)"))
+        assertTrue(item.detail.contains("+new"))
+        assertTrue(state.selectedTurns.single().diff.contains("+new"))
+        assertTrue(state.diagnostics.none { it.method.startsWith("unhandled:") })
+    }
+
     private fun notification(method: String, params: String): RpcNotification =
         RpcNotification(method, json.parseToJsonElement(params).jsonObject as JsonObject)
 

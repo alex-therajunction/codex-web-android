@@ -104,6 +104,7 @@ import io.github.alextherajunction.codexweb.ui.components.GoalSummaryCard
 import io.github.alextherajunction.codexweb.ui.components.NotificationsDialog
 import io.github.alextherajunction.codexweb.ui.components.PendingRequestCard
 import io.github.alextherajunction.codexweb.ui.components.PlanSummaryCard
+import io.github.alextherajunction.codexweb.ui.components.TurnDiffCard
 import io.github.alextherajunction.codexweb.ui.components.ProjectPickerDialog
 import io.github.alextherajunction.codexweb.ui.components.TurnErrorCard
 import io.github.alextherajunction.codexweb.ui.components.UserInputDialog
@@ -394,7 +395,12 @@ fun MainScreen(
                     onCwdClick = {
                         if (isNewChat) showProjectPicker = true else showCwdDialog = true
                     },
-                )
+                ) {
+                    AccessControlChip(
+                        profile = snapshot.selectedPermissionProfile,
+                        onSelected = onPermissionSelected,
+                    )
+                }
                 if (state.reconnecting) {
                     ReconnectBanner(
                         attempt = state.reconnectAttempt,
@@ -423,10 +429,6 @@ fun MainScreen(
                         )
                     }
                 }
-                PermissionSelectorBar(
-                    profile = snapshot.selectedPermissionProfile,
-                    onSelected = onPermissionSelected,
-                )
                 Composer(
                     value = state.composerText,
                     sending = state.sending,
@@ -541,7 +543,7 @@ private fun ReconnectBanner(
 }
 
 @Composable
-private fun PermissionSelectorBar(
+private fun AccessControlChip(
     profile: PermissionProfile,
     onSelected: (PermissionProfile) -> Unit,
 ) {
@@ -549,92 +551,85 @@ private fun PermissionSelectorBar(
     var pendingFullAccess by remember { mutableStateOf(false) }
     val selected = permissionChoice(profile)
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        contentAlignment = Alignment.CenterStart,
+    AssistChip(
+        onClick = { expanded = true },
+        label = {
+            Text(
+                selected.label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        leadingIcon = {
+            Icon(
+                selected.icon,
+                null,
+                tint = permissionTint(profile),
+                modifier = Modifier.size(18.dp),
+            )
+        },
+        trailingIcon = {
+            Icon(
+                Icons.Rounded.ChevronRight,
+                null,
+                tint = CodexMuted,
+                modifier = Modifier.size(18.dp),
+            )
+        },
+        colors = AssistChipDefaults.assistChipColors(
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            trailingIconContentColor = CodexMuted,
+            containerColor = CodexSurface.copy(alpha = 0.6f),
+        ),
+        border = AssistChipDefaults.assistChipBorder(
+            enabled = true,
+            borderColor = if (profile == PermissionProfile.FULL_ACCESS) {
+                CodexDanger.copy(alpha = 0.65f)
+            } else {
+                CodexOutline
+            },
+        ),
+    )
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = { expanded = false },
     ) {
-        AssistChip(
-            onClick = { expanded = true },
-            label = {
-                Text(
-                    selected.label,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            },
-            leadingIcon = {
-                Icon(
-                    selected.icon,
-                    null,
-                    tint = permissionTint(profile),
-                    modifier = Modifier.size(18.dp),
-                )
-            },
-            trailingIcon = {
-                Icon(
-                    Icons.Rounded.ChevronRight,
-                    null,
-                    tint = CodexMuted,
-                    modifier = Modifier.size(18.dp),
-                )
-            },
-            colors = AssistChipDefaults.assistChipColors(
-                labelColor = MaterialTheme.colorScheme.onSurface,
-                trailingIconContentColor = CodexMuted,
-                containerColor = CodexSurface.copy(alpha = 0.6f),
-            ),
-            border = AssistChipDefaults.assistChipBorder(
-                enabled = true,
-                borderColor = if (profile == PermissionProfile.FULL_ACCESS) {
-                    CodexDanger.copy(alpha = 0.65f)
-                } else {
-                    CodexOutline
-                },
-            ),
-        )
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            permissionChoices().forEach { choice ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(choice.label)
-                            Text(
-                                choice.description,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = CodexMuted,
-                            )
-                        }
-                    },
-                    leadingIcon = {
-                        Icon(
-                            choice.icon,
-                            null,
-                            tint = permissionTint(choice.profile),
-                            modifier = Modifier.size(20.dp),
+        permissionChoices().forEach { choice ->
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(choice.label)
+                        Text(
+                            choice.description,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CodexMuted,
                         )
-                    },
-                    trailingIcon = {
-                        if (choice.profile == profile) {
-                            Icon(Icons.Rounded.Check, null, tint = CodexLime)
-                        }
-                    },
-                    onClick = {
-                        expanded = false
-                        if (choice.profile == PermissionProfile.FULL_ACCESS &&
-                            profile != PermissionProfile.FULL_ACCESS
-                        ) {
-                            pendingFullAccess = true
-                        } else {
-                            onSelected(choice.profile)
-                        }
-                    },
-                )
-            }
+                    }
+                },
+                leadingIcon = {
+                    Icon(
+                        choice.icon,
+                        null,
+                        tint = permissionTint(choice.profile),
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                trailingIcon = {
+                    if (choice.profile == profile) {
+                        Icon(Icons.Rounded.Check, null, tint = CodexLime)
+                    }
+                },
+                onClick = {
+                    expanded = false
+                    if (choice.profile == PermissionProfile.FULL_ACCESS &&
+                        profile != PermissionProfile.FULL_ACCESS
+                    ) {
+                        pendingFullAccess = true
+                    } else {
+                        onSelected(choice.profile)
+                    }
+                },
+            )
         }
     }
 
@@ -1027,6 +1022,7 @@ private fun Conversation(
     val lastTextLength = when (val row = rows.lastOrNull()) {
         is ConversationRow.Item -> row.item.text.length + row.item.detail.length
         is ConversationRow.Error -> row.message.length
+        is ConversationRow.Diff -> row.diff.length
         null -> 0
     }
     val lastRowKey = rows.lastOrNull()?.key
@@ -1082,6 +1078,7 @@ private fun Conversation(
             when (row) {
                 is ConversationRow.Item -> ChatItemRow(row.item)
                 is ConversationRow.Error -> TurnErrorCard(row.message)
+                is ConversationRow.Diff -> TurnDiffCard(row.diff)
             }
         }
         if (snapshot.selectedActiveTurnId != null) {
