@@ -3,7 +3,7 @@ name: Build and publish Android APK
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["android-v*"]
   pull_request:
   workflow_dispatch:
 
@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION_NAME="${GITHUB_REF_NAME#v}"
+            VERSION_NAME="${GITHUB_REF_NAME#android-v}"
             RELEASE_TAG="${GITHUB_REF_NAME}"
             SHOULD_RELEASE=true
           elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
