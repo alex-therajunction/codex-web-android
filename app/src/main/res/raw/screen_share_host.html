@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <style>
+    html, body {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #171717;
+    }
+    #screen {
+      position: fixed;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #171717;
+    }
+    #keyboard {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      opacity: 0.01;
+      resize: none;
+      font-size: 16px;
+      color: transparent;
+      background: transparent;
+      caret-color: transparent;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="screen" title="Host desktop" src="/workspace/screen"></iframe>
+  <textarea id="keyboard" aria-hidden="true" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+  <script>
+    (function () {
+      var frame = document.getElementById('screen');
+      var keyboardInput = document.getElementById('keyboard');
+      var socketProbeInstalled = false;
+      var lastSocketClose = null;
+      var composing = false;
+
+      var specialKeys = {
+        Enter: 'Enter',
+        Backspace: 'Backspace',
+        Tab: 'Tab',
+        Escape: 'Escape',
+        Delete: 'Delete',
+        ArrowLeft: 'ArrowLeft',
+        ArrowRight: 'ArrowRight',
+        ArrowUp: 'ArrowUp',
+        ArrowDown: 'ArrowDown',
+        Home: 'Home',
+        End: 'End',
+        PageUp: 'PageUp',
+        PageDown: 'PageDown'
+      };
+
+      function report(message) {
+        if (
+          window.codexScreenShare &&
+          typeof window.codexScreenShare.postMessage === 'function'
+        ) {
+          window.codexScreenShare.postMessage(JSON.stringify(message));
+        }
+      }
+
+      function installSocketProbe() {
+        if (socketProbeInstalled || !frame.contentWindow) return;
+        var frameWindow = frame.contentWindow;
+        var NativeWebSocket = frameWindow.WebSocket;
+        if (typeof NativeWebSocket !== 'function') return;
+
+        function ProbedWebSocket(url, protocols) {
+          var socket = protocols === undefined
+            ? new NativeWebSocket(url)
+            : new NativeWebSocket(url, protocols);
+          socket.addEventListener('close', function (event) {
+            if (event.code === 4001 || event.code === 4002 || event.code === 4003) {
+              lastSocketClose = { code: event.code, reason: event.reason };
+            }
+          });
+          return socket;
+        }
+
+        ProbedWebSocket.prototype = NativeWebSocket.prototype;
+        ProbedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+        ProbedWebSocket.OPEN = NativeWebSocket.OPEN;
+        ProbedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+        ProbedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+        frameWindow.WebSocket = ProbedWebSocket;
+        socketProbeInstalled = true;
+      }
+
+      function screenCanvas() {
+        try {
+          var document = frame.contentDocument;
+          return document ? document.querySelector('canvas') : null;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      function dispatchKey(type, key, code) {
+        var canvas = screenCanvas();
+        if (!canvas) return;
+        canvas.dispatchEvent(
+          new KeyboardEvent(type, {
+            key: key,
+            code: code,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      }
+
+      function sendKeyPair(key, code) {
+        dispatchKey('keydown', key, code);
+        dispatchKey('keyup', key, code);
+      }
+
+      function sendText(text) {
+        Array.from(text).forEach(function (character) {
+          if (character === '\n') {
+            sendKeyPair('Enter', 'Enter');
+          } else {
+            // noVNC treats Unidentified keydown events as virtual-keyboard
+            // text and sends the matching keysym press and release.
+            dispatchKey('keydown', character, 'Unidentified');
+          }
+        });
+      }
+
+      window.addEventListener('message', function (event) {
+        if (
+          event.origin !== window.location.origin ||
+          !frame.contentWindow ||
+          event.source !== frame.contentWindow ||
+          !event.data ||
+          typeof event.data.type !== 'string'
+        ) {
+          return;
+        }
+        if (
+          event.data.type === 'screen-frame/ready' ||
+          event.data.type === 'screen-frame/status' ||
+          event.data.type === 'screen-frame/error'
+        ) {
+          if (event.data.type === 'screen-frame/ready') {
+            installSocketProbe();
+          }
+          var message = event.data;
+          if (
+            lastSocketClose &&
+            message.type === 'screen-frame/status' &&
+            message.state === 'disconnected'
+          ) {
+            message = {
+              type: message.type,
+              state: message.state,
+              code: lastSocketClose.code,
+              reason: lastSocketClose.reason || message.reason
+            };
+            lastSocketClose = null;
+          }
+          report(message);
+        }
+      });
+
+      window.codexScreenConnect = function (command) {
+        lastSocketClose = null;
+        if (frame.contentWindow) {
+          frame.contentWindow.postMessage(command, window.location.origin);
+        }
+      };
+
+      window.codexScreenDisconnect = function () {
+        if (frame.contentWindow) {
+          frame.contentWindow.postMessage(
+            { type: 'screen-frame/disconnect' },
+            window.location.origin
+          );
+        }
+      };
+
+      window.codexScreenKeyboard = function () {
+        keyboardInput.value = '';
+        keyboardInput.focus();
+      };
+
+      window.codexScreenKeyboardHide = function () {
+        keyboardInput.value = '';
+        keyboardInput.blur();
+      };
+
+      keyboardInput.addEventListener('keydown', function (event) {
+        if (composing || !specialKeys[event.key]) return;
+        event.preventDefault();
+        sendKeyPair(event.key, specialKeys[event.key]);
+      });
+
+      keyboardInput.addEventListener('beforeinput', function (event) {
+        if (composing) return;
+        if (event.inputType === 'deleteContentBackward' ||
+            event.inputType === 'deleteWordBackward') {
+          event.preventDefault();
+          sendKeyPair('Backspace', 'Backspace');
+        }
+      });
+
+      keyboardInput.addEventListener('compositionstart', function () {
+        composing = true;
+      });
+
+      keyboardInput.addEventListener('compositionend', function (event) {
+        composing = false;
+        var text = keyboardInput.value || event.data || '';
+        keyboardInput.value = '';
+        if (text) sendText(text);
+      });
+
+      keyboardInput.addEventListener('input', function () {
+        if (composing) return;
+        var text = keyboardInput.value;
+        keyboardInput.value = '';
+        if (text) sendText(text);
+      });
+    })();
+  </script>
+</body>
+</html>

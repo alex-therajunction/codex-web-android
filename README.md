@@ -2,7 +2,7 @@
 
 A native Android client for a self-hosted [Codex Web](https://github.com/dimitrovs/codex-web) deployment.
 
-The app does not embed the Codex Web application UI. It uses a WebView only for the deployment's existing sign-in flow, reads the resulting authenticated session cookie from Android's WebView cookie store, and then talks directly to the same Codex Web bridge and app-server in a Jetpack Compose interface.
+The app does not embed the main Codex Web application UI. It uses a WebView for the deployment's existing sign-in flow and for the host screen-share viewer, reads the authenticated session cookie from Android's WebView cookie store, and otherwise talks directly to the same Codex Web bridge and app-server in a Jetpack Compose interface.
 
 ## What works
 
@@ -15,6 +15,7 @@ The app does not embed the Codex Web application UI. It uses a WebView only for 
 - Folder-based projects derived from thread `cwd`: the drawer groups conversations by server project, with an empty current project shown until its first conversation exists.
 - Project-aware new chat: choose a recent project or browse the server directory tree through `fs/readDirectory`; the selected path is persisted and sent as `cwd` to `thread/start` and `turn/start`.
 - Standalone interactive PTY terminal from **More → Terminal**, backed by the same `process/spawn` session as the Codex Web sidebar terminal, with streamed ANSI output, live PTY resize, soft-keyboard input, restart, and close cleanup.
+- Full-screen host desktop sharing from **More → Screen share**, using the deployment's `/workspace/screen` noVNC client with pointer control, on-screen and hardware-keyboard input, live resolution reporting, exclusive-session detection, explicit takeover, reconnect, and close cleanup.
 - Streaming assistant text from `item/agentMessage/delta`.
 - Failed Turn errors render immediately after that Turn rather than at the end of the conversation.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.
@@ -58,6 +59,7 @@ The Android app resolves the session with `GET /api/auth/me` and `GET /api/codex
 - The deployment must expose a `ws://` or `wss://` URL that is reachable from the Android device. A bridge URL pointing at the server's `127.0.0.1` is not reachable from a phone.
 - HTTPS is recommended. HTTP is permitted for trusted LAN deployments.
 - A UnifiedPush distributor such as Sunup or ntfy to receive background notifications.
+- For screen sharing, the deployment must have `CODEX_WEB_SCREEN_SHARE=1`, an X11 `DISPLAY`, and `x11vnc` installed (or configured through `CODEX_WEB_X11VNC_PATH`). Set `CODEX_WEB_SCREEN_SHARE_DISPLAY` when it differs from `DISPLAY`. Codex Web broker mode disables screen sharing.
 
 ## Notifications
 
@@ -139,6 +141,8 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 - The app persists the deployment URL, last selected server-provided model ID, last selected server project path, UnifiedPush distributor/instance/status settings, and the public VAPID key. Project paths and push metadata are not Codex credentials; the push endpoint and encryption keys remain server-side.
 - WebView cookies are managed by Android's WebView cookie store, not copied into app preferences or logs.
 - WebView file/content access is disabled and mixed content is rejected.
+- The screen-share WebView loads a local wrapper through an intercepted same-origin URL, so the iframe can use the existing `SameSite=Strict` session cookie without copying it off the deployment origin. Only the deployment origin may post frame messages.
+- Screen-share clipboard synchronization is disabled by Codex Web: the bridge drops `ClientCutText`, and `x11vnc` runs with `-noclipboard -nosetclipboard`.
 - SSL certificate errors are not bypassed. Use a trusted certificate for HTTPS deployments.
 - The app does not modify `codex-core`; it uses the standard Codex Web bridge.
 - The default permission profile asks before sandbox escapes, network access, or protected file changes. Auto Approval delegates review to the app-server's risk reviewer, and Full Access disables approval prompts for the selected thread after an explicit warning.
@@ -150,5 +154,6 @@ or run **Actions → Build and publish Android APK → Run workflow**.
 - `app/src/main/java/.../protocol/`: JSON-RPC transport, app-server models/reducer, request responses.
 - `app/src/main/java/.../push/`: UnifiedPush registration, bridge subscription requests, payload validation, and notification rendering.
 - `app/src/main/java/.../ui/`: Compose screens, chat rendering, approval and diagnostics surfaces.
+- `app/src/main/res/raw/screen_share_host.html`: same-origin host wrapper that embeds `/workspace/screen`, relays the screen-frame protocol, and preserves takeover close codes.
 - `app/src/test/`: reducer, project grouping/path browsing, URL/session, and exact approval response tests.
 - `docs/handover/`: implementation handover and protocol notes.

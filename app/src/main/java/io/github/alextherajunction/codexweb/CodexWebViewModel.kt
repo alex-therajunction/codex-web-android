@@ -10,10 +10,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.alextherajunction.codexweb.data.AppPreferences
 import io.github.alextherajunction.codexweb.data.DeploymentSession
+import io.github.alextherajunction.codexweb.data.ScreenShareCapability
+import io.github.alextherajunction.codexweb.data.ScreenShareFrameMessage
+import io.github.alextherajunction.codexweb.data.ScreenShareFrameState
 import io.github.alextherajunction.codexweb.data.SessionExpiredException
 import io.github.alextherajunction.codexweb.data.WebSessionGateway
+import io.github.alextherajunction.codexweb.data.buildScreenShareWebSocketUrl
 import io.github.alextherajunction.codexweb.data.hasWebAuthSessionCookie
 import io.github.alextherajunction.codexweb.data.normalizeDeploymentUrl
+import io.github.alextherajunction.codexweb.data.parseScreenShareFrameMessage
 import io.github.alextherajunction.codexweb.protocol.AppServerRepository
 import io.github.alextherajunction.codexweb.protocol.AppServerSnapshot
 import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
@@ -91,6 +96,7 @@ data class AppUiState(
     val pushStatus: String? = null,
     val pushError: String? = null,
     val terminal: TerminalUiState? = null,
+    val screenShare: ScreenShareUiState? = null,
     val snapshot: AppServerSnapshot = AppServerSnapshot(),
 )
 
@@ -109,6 +115,68 @@ data class TerminalUiState(
     val exitCode: Int? = null,
     val error: String? = null,
 )
+
+enum class ScreenShareStatus {
+    LOADING,
+    CONNECTING,
+    CONNECTED,
+    DISCONNECTED,
+    ALREADY_ACTIVE,
+    TAKEN_OVER,
+    DISABLED,
+    UNSUPPORTED,
+    ERROR,
+}
+
+data class ScreenShareUiState(
+    val deploymentUrl: String,
+    val origin: String,
+    val status: ScreenShareStatus = ScreenShareStatus.LOADING,
+    val display: String? = null,
+    val wsPath: String? = null,
+    val webSocketUrl: String? = null,
+    val takeoverWebSocketUrl: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val reason: String? = null,
+    val connectionRequestId: Long = 0,
+    val useTakeover: Boolean = false,
+) {
+    val requestedWebSocketUrl: String?
+        get() = if (useTakeover) takeoverWebSocketUrl else webSocketUrl
+}
+
+internal fun ScreenShareUiState.reduceFrameMessage(
+    message: ScreenShareFrameMessage,
+): ScreenShareUiState = when (message) {
+    ScreenShareFrameMessage.Ready -> copy(status = ScreenShareStatus.CONNECTING)
+    is ScreenShareFrameMessage.Error -> copy(
+        status = ScreenShareStatus.ERROR,
+        reason = message.message,
+    )
+    is ScreenShareFrameMessage.Status -> when (message.state) {
+        ScreenShareFrameState.CONNECTING -> copy(
+            status = ScreenShareStatus.CONNECTING,
+            reason = null,
+        )
+        ScreenShareFrameState.CONNECTED -> copy(
+            status = ScreenShareStatus.CONNECTED,
+            width = message.width,
+            height = message.height,
+            reason = null,
+        )
+        ScreenShareFrameState.DISCONNECTED -> copy(
+            status = when (message.code) {
+                4001 -> ScreenShareStatus.TAKEN_OVER
+                4002 -> ScreenShareStatus.ALREADY_ACTIVE
+                else -> ScreenShareStatus.DISCONNECTED
+            },
+            width = null,
+            height = null,
+            reason = message.reason,
+        )
+    }
+}
 
 private const val MAX_TERMINAL_INPUT_BUFFER = 64 * 1024
 private val TERMINAL_BACKGROUND = Color(0xFF10120E)
@@ -157,6 +225,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     private var repository: AppServerRepository? = null
     private var repositoryCollector: Job? = null
     private var reconnectJob: Job? = null
+    private var screenShareJob: Job? = null
+    private var deploymentSession: DeploymentSession? = null
     private var connecting = false
     private var checkingLoginCookie = false
     private var pendingNotificationThreadId: String? = null
@@ -360,6 +430,172 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
             TerminalStatus.EXITED,
             TerminalStatus.ERROR,
             -> Unit
+        }
+    }
+
+    fun openScreenShare() {
+        if (_state.value.phase != AppPhase.READY) {
+            _state.update { it.copy(error = "Connect to Codex Web before sharing the host screen") }
+            return
+        }
+        val session = deploymentSession
+        if (session == null) {
+            _state.update { it.copy(error = "Codex Web session is unavailable. Reconnect and try again.") }
+            return
+        }
+        closeTerminal()
+        screenShareJob?.cancel()
+        _state.update {
+            it.copy(
+                screenShare = ScreenShareUiState(
+                    deploymentUrl = session.deploymentUrl,
+                    origin = session.origin,
+                ),
+                error = null,
+            )
+        }
+        loadScreenShareCapability(session)
+    }
+
+    fun retryScreenShare() {
+        val current = _state.value.screenShare ?: return
+        if (current.webSocketUrl == null) {
+            openScreenShare()
+        } else {
+            reconnectScreenShare()
+        }
+    }
+
+    fun reconnectScreenShare() {
+        _state.update { state ->
+            val screenShare = state.screenShare ?: return@update state
+            state.copy(
+                screenShare = screenShare.copy(
+                    status = ScreenShareStatus.CONNECTING,
+                    width = null,
+                    height = null,
+                    reason = null,
+                    connectionRequestId = screenShare.connectionRequestId + 1,
+                    useTakeover = false,
+                ),
+            )
+        }
+    }
+
+    fun takeOverScreenShare() {
+        _state.update { state ->
+            val screenShare = state.screenShare ?: return@update state
+            if (screenShare.takeoverWebSocketUrl == null) return@update state
+            state.copy(
+                screenShare = screenShare.copy(
+                    status = ScreenShareStatus.CONNECTING,
+                    width = null,
+                    height = null,
+                    reason = null,
+                    connectionRequestId = screenShare.connectionRequestId + 1,
+                    useTakeover = true,
+                ),
+            )
+        }
+    }
+
+    fun onScreenShareFrameMessage(raw: String) {
+        val message = parseScreenShareFrameMessage(raw) ?: return
+        _state.update { state ->
+            val screenShare = state.screenShare ?: return@update state
+            state.copy(screenShare = screenShare.reduceFrameMessage(message))
+        }
+    }
+
+    fun onScreenShareViewDetached() {
+        _state.update { state ->
+            val screenShare = state.screenShare ?: return@update state
+            when (screenShare.status) {
+                ScreenShareStatus.DISABLED,
+                ScreenShareStatus.UNSUPPORTED,
+                ScreenShareStatus.ERROR,
+                ScreenShareStatus.LOADING,
+                -> state
+                else -> state.copy(
+                    screenShare = screenShare.copy(
+                        status = ScreenShareStatus.CONNECTING,
+                        width = null,
+                        height = null,
+                        reason = null,
+                    ),
+                )
+            }
+        }
+    }
+
+    fun closeScreenShare() {
+        screenShareJob?.cancel()
+        screenShareJob = null
+        _state.update { it.copy(screenShare = null) }
+    }
+
+    private fun loadScreenShareCapability(session: DeploymentSession) {
+        screenShareJob = viewModelScope.launch {
+            try {
+                when (val capability = gateway.screenShareCapability(session)) {
+                    ScreenShareCapability.Disabled -> updateScreenShare(session) {
+                        it.copy(
+                            status = ScreenShareStatus.DISABLED,
+                            reason = "Screen share is disabled on the server. Set CODEX_WEB_SCREEN_SHARE=1 in the server environment to enable it.",
+                        )
+                    }
+                    is ScreenShareCapability.Unsupported -> updateScreenShare(session) {
+                        it.copy(status = ScreenShareStatus.UNSUPPORTED, reason = capability.reason)
+                    }
+                    is ScreenShareCapability.Available -> {
+                        val webSocketUrl = buildScreenShareWebSocketUrl(
+                            bridgeUrl = session.bridgeUrl,
+                            wsPath = capability.wsPath,
+                        )
+                        val takeoverWebSocketUrl = buildScreenShareWebSocketUrl(
+                            bridgeUrl = session.bridgeUrl,
+                            wsPath = capability.wsPath,
+                            takeover = true,
+                        )
+                        updateScreenShare(session) {
+                            it.copy(
+                                status = ScreenShareStatus.CONNECTING,
+                                display = capability.display.takeIf(String::isNotBlank),
+                                wsPath = capability.wsPath,
+                                webSocketUrl = webSocketUrl,
+                                takeoverWebSocketUrl = takeoverWebSocketUrl,
+                                reason = null,
+                                connectionRequestId = 1,
+                                useTakeover = false,
+                            )
+                        }
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: SessionExpiredException) {
+                closeScreenShare()
+                returnToLogin("Your Codex Web login expired. Sign in again.", session.deploymentUrl)
+            } catch (error: Exception) {
+                updateScreenShare(session) {
+                    it.copy(
+                        status = ScreenShareStatus.ERROR,
+                        reason = friendlyMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun updateScreenShare(
+        session: DeploymentSession,
+        transform: (ScreenShareUiState) -> ScreenShareUiState,
+    ) {
+        _state.update { state ->
+            val screenShare = state.screenShare
+                ?.takeIf { it.deploymentUrl == session.deploymentUrl }
+                ?: return@update state
+            state.copy(screenShare = transform(screenShare))
         }
     }
 
@@ -1150,6 +1386,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     fun signOut() {
         closeTerminal()
+        closeScreenShare()
         val url = _state.value.urlInput
         val cookie = cookieFor(url)
         val pushInstance = PushDistributors.ensureInstance(getApplication())
@@ -1158,6 +1395,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         repositoryCollector?.cancel()
         repository?.close()
         repository = null
+        deploymentSession = null
         runCatching { PushDistributors.unregister(getApplication(), pushInstance) }
         preferences.notificationsEnabled = false
         preferences.pushStatus = null
@@ -1187,6 +1425,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         closeTerminal()
+        closeScreenShare()
         reconnectJob?.cancel()
         repositoryCollector?.cancel()
         repository?.close()
@@ -1226,6 +1465,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 val normalized = normalizeDeploymentUrl(rawUrl).toString().trimEnd('/')
                 preferences.deploymentUrl = normalized
                 val session = resolvedSession ?: gateway.resolve(normalized, cookie)
+                deploymentSession = session
                 val repo = AppServerRepository(viewModelScope)
                 repository = repo
                 repositoryCollector = viewModelScope.launch {
@@ -1288,6 +1528,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                 if (preferences.notificationsEnabled) registerPushNotifications()
                 openPendingNotificationThread()
             } catch (error: SessionExpiredException) {
+                deploymentSession = null
+                closeScreenShare()
                 _state.update {
                     it.copy(
                         phase = AppPhase.SIGNED_OUT,
@@ -1295,6 +1537,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
             } catch (error: Exception) {
+                deploymentSession = null
+                closeScreenShare()
                 repositoryCollector?.cancel()
                 repository?.close()
                 repository = null
@@ -1330,6 +1574,7 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
                     }
                     val normalized = normalizeDeploymentUrl(rawUrl).toString().trimEnd('/')
                     val session = gateway.resolve(normalized, cookie)
+                    deploymentSession = session
                     val selectedThreadId = _state.value.snapshot.selectedThreadId
                     repo.connect(
                         session = session,
@@ -1373,6 +1618,8 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun returnToLogin(message: String, url: String) {
+        deploymentSession = null
+        closeScreenShare()
         repositoryCollector?.cancel()
         repositoryCollector = null
         repository?.close()

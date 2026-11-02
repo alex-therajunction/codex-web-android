@@ -22,6 +22,7 @@ import io.github.alextherajunction.codexweb.protocol.ApprovalDecision
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
 import io.github.alextherajunction.codexweb.ui.screens.AuthWebViewScreen
 import io.github.alextherajunction.codexweb.ui.screens.MainScreen
+import io.github.alextherajunction.codexweb.ui.screens.ScreenShareScreen
 import io.github.alextherajunction.codexweb.ui.screens.SetupScreen
 import io.github.alextherajunction.codexweb.ui.screens.TerminalScreen
 import io.github.alextherajunction.codexweb.ui.theme.CodexInk
@@ -57,7 +58,17 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onClearCookies = viewModel::discardWebViewCookies,
             )
             AppPhase.CONNECTING -> ConnectingScreen(state)
-            AppPhase.READY -> state.terminal?.let { terminal ->
+            AppPhase.READY -> state.screenShare?.let { screenShare ->
+                ScreenShareScreen(
+                    state = screenShare,
+                    onClose = viewModel::closeScreenShare,
+                    onRetry = viewModel::retryScreenShare,
+                    onReconnect = viewModel::reconnectScreenShare,
+                    onTakeOver = viewModel::takeOverScreenShare,
+                    onFrameMessage = viewModel::onScreenShareFrameMessage,
+                    onViewDetached = viewModel::onScreenShareViewDetached,
+                )
+            } ?: state.terminal?.let { terminal ->
                 TerminalScreen(
                     terminal = terminal,
                     onClose = viewModel::closeTerminal,
@@ -79,6 +90,7 @@ fun CodexWebApp(viewModel: CodexWebViewModel) {
                 onComposerChange = viewModel::updateComposer,
                 onSend = viewModel::sendMessage,
                 onOpenTerminal = viewModel::openTerminal,
+                onOpenScreenShare = viewModel::openScreenShare,
                 onInterrupt = viewModel::interrupt,
                 onCwdChange = viewModel::updateCwd,
                 onApprove = viewModel::approve,

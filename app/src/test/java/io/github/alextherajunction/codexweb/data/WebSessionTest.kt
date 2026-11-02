@@ -71,6 +71,59 @@ class WebSessionTest {
         }
     }
 
+    @Test
+    fun `screen share capability uses the authenticated deployment`() = runTest {
+        val server = MockWebServer()
+        try {
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """{"capability":{"status":"available","display":":0","wsPath":"/screen-share/ws"}}""",
+                ),
+            )
+            val base = server.url("/").toString().trimEnd('/')
+            val session = DeploymentSession(
+                deploymentUrl = base,
+                bridgeUrl = "ws://${server.hostName}:${server.port}/codex-bridge?token=secret",
+                origin = "http://${server.hostName}:${server.port}",
+                cookieHeader = "codex_web_session=session-cookie",
+                user = WebUser("test@example.com", "/home/test", "/home/test"),
+                homeDirectory = "/home/test",
+            )
+
+            val capability = WebSessionGateway(OkHttpClient()).screenShareCapability(session)
+
+            assertEquals(
+                ScreenShareCapability.Available(display = ":0", wsPath = "/screen-share/ws"),
+                capability,
+            )
+            val request = server.takeRequest()
+            assertEquals("/api/codex/screen-share", request.path)
+            assertEquals("codex_web_session=session-cookie", request.getHeader("Cookie"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test(expected = SessionExpiredException::class)
+    fun `expired screen share capability request is treated as a session expiry`() = runTest {
+        val server = MockWebServer()
+        try {
+            server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"expired"}"""))
+            val base = server.url("/").toString().trimEnd('/')
+            val session = DeploymentSession(
+                deploymentUrl = base,
+                bridgeUrl = "ws://${server.hostName}:${server.port}/codex-bridge",
+                origin = "http://${server.hostName}:${server.port}",
+                cookieHeader = "codex_web_session=expired",
+                user = WebUser("test@example.com", "/home/test", "/home/test"),
+                homeDirectory = "/home/test",
+            )
+            WebSessionGateway(OkHttpClient()).screenShareCapability(session)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     @Test(expected = SessionExpiredException::class)
     fun `expired web session is surfaced separately`() = runTest {
         val server = MockWebServer()

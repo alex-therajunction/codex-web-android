@@ -84,6 +84,14 @@ class WebSessionGateway(
         }
     }
 
+    suspend fun screenShareCapability(session: DeploymentSession): ScreenShareCapability =
+        withContext(Dispatchers.IO) {
+            val base = session.deploymentUrl.trimEnd('/')
+            parseScreenShareCapability(
+                getJson("$base/api/codex/screen-share", session.cookieHeader),
+            )
+        }
+
     private fun getJson(url: String, cookieHeader: String?): JsonObject {
         val request = Request.Builder()
             .url(url)

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
@@ -142,6 +143,7 @@ fun MainScreen(
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
     onOpenTerminal: () -> Unit,
+    onOpenScreenShare: () -> Unit,
     onInterrupt: () -> Unit,
     onCwdChange: (String) -> Unit,
     onApprove: (PendingRequest, ApprovalDecision) -> Unit,
@@ -365,6 +367,14 @@ fun MainScreen(
                                     onClick = {
                                         showOverflow = false
                                         onOpenTerminal()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Screen share") },
+                                    leadingIcon = { Icon(Icons.Rounded.DesktopWindows, null) },
+                                    onClick = {
+                                        showOverflow = false
+                                        onOpenScreenShare()
                                     },
                                 )
                                 DropdownMenuItem(
