@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -23,15 +24,16 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,9 +48,8 @@ import androidx.compose.ui.unit.dp
 import io.github.alextherajunction.codexweb.protocol.Diagnostic
 import io.github.alextherajunction.codexweb.protocol.GoalInfo
 import io.github.alextherajunction.codexweb.protocol.PendingRequest
-import io.github.alextherajunction.codexweb.protocol.array
-import io.github.alextherajunction.codexweb.protocol.asObjectOrNull
-import io.github.alextherajunction.codexweb.protocol.string
+import io.github.alextherajunction.codexweb.protocol.buildUserInputAnswers
+import io.github.alextherajunction.codexweb.protocol.parseUserInputQuestions
 import io.github.alextherajunction.codexweb.ui.theme.CodexAmber
 import io.github.alextherajunction.codexweb.ui.theme.CodexLime
 import io.github.alextherajunction.codexweb.ui.theme.CodexMuted
@@ -199,24 +200,17 @@ fun DiagnosticsDialog(
     )
 }
 
-private data class InputQuestion(
-    val id: String,
-    val header: String,
-    val question: String,
-    val isOther: Boolean,
-    val isSecret: Boolean,
-    val options: List<String>,
-)
-
 @Composable
 fun UserInputDialog(
     request: PendingRequest,
     onDismiss: () -> Unit,
     onSubmit: (Map<String, List<String>>) -> Unit,
 ) {
-    val questions = remember(request.id) { parseQuestions(request) }
-    val selected = remember(request.id) { mutableMapOf<String, String>() }
-    val other = remember(request.id) { mutableMapOf<String, String>() }
+    val questions = remember(request.id) { parseUserInputQuestions(request) }
+    val selected = remember(request.id) { mutableStateMapOf<String, String>() }
+    val other = remember(request.id) { mutableStateMapOf<String, String>() }
+    val answers = buildUserInputAnswers(questions, selected, other)
+    val canSubmit = questions.isEmpty() || answers.size == questions.size
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -246,24 +240,64 @@ fun UserInputDialog(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         if (question.options.isNotEmpty()) {
-                            Row(
+                            Spacer(Modifier.height(8.dp))
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 question.options.forEach { option ->
-                                    FilterChip(
-                                        selected = selected[question.id] == option,
-                                        onClick = {
-                                            selected[question.id] = option
-                                            other.remove(question.id)
-                                        },
-                                        label = { Text(option) },
-                                        leadingIcon = if (selected[question.id] == option) {
-                                            { Icon(Icons.Rounded.Check, null, Modifier.height(16.dp)) }
+                                    val isSelected = selected[question.id] == option.label
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selected[question.id] = option.label
+                                                other.remove(question.id)
+                                            },
+                                        color = if (isSelected) {
+                                            CodexLime.copy(alpha = 0.12f)
                                         } else {
-                                            null
+                                            CodexSurface
                                         },
-                                    )
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isSelected) CodexLime else CodexOutline,
+                                        ),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            RadioButton(
+                                                selected = isSelected,
+                                                onClick = null,
+                                                modifier = Modifier.size(20.dp),
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    option.label,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                )
+                                                if (option.description.isNotBlank()) {
+                                                    Text(
+                                                        option.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = CodexMuted,
+                                                    )
+                                                }
+                                            }
+                                            if (isSelected) {
+                                                Icon(
+                                                    Icons.Rounded.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = CodexLime,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -294,14 +328,10 @@ fun UserInputDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val answers = questions.mapNotNull { question ->
-                    val answer = other[question.id]?.trim().orEmpty()
-                        .ifBlank { selected[question.id].orEmpty() }
-                    if (answer.isBlank()) null else question.id to listOf(answer)
-                }.toMap()
-                onSubmit(answers)
-            }) { Text("Submit") }
+            TextButton(
+                onClick = { onSubmit(answers) },
+                enabled = canSubmit,
+            ) { Text("Submit") }
         },
         dismissButton = {
             Row {
@@ -310,21 +340,4 @@ fun UserInputDialog(
             }
         },
     )
-}
-
-private fun parseQuestions(request: PendingRequest): List<InputQuestion> {
-    return request.params.array("questions")?.mapNotNull { raw ->
-        val obj = raw.asObjectOrNull() ?: return@mapNotNull null
-        val options = obj.array("options")?.mapNotNull { option ->
-            option.asObjectOrNull()?.string("label")
-        }.orEmpty()
-        InputQuestion(
-            id = obj.string("id").orEmpty(),
-            header = obj.string("header").orEmpty(),
-            question = obj.string("question").orEmpty(),
-            isOther = obj["isOther"]?.toString() == "true",
-            isSecret = obj["isSecret"]?.toString() == "true",
-            options = options,
-        )
-    }.orEmpty().filter { it.id.isNotBlank() }
 }
