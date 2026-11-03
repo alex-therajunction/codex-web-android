@@ -610,29 +610,32 @@ class AppServerRepository(
     suspend fun respondToApproval(request: PendingRequest, decision: ApprovalDecision) {
         val result = buildApprovalResponse(request, decision)
         if (result == null) {
-            rpc.respondError(request.id, "Unsupported approval request: ${request.method}")
-            _state.update { it.removePendingRequest(request.id) }
+            _state.respondAndResolve(request.id) {
+                rpc.respondError(request.id, "Unsupported approval request: ${request.method}")
+            }
             return
         }
-        rpc.respond(request.id, result)
-        _state.update { it.removePendingRequest(request.id) }
+        _state.respondAndResolve(request.id) { rpc.respond(request.id, result) }
     }
 
     suspend fun answerUserInput(request: PendingRequest, answers: Map<String, List<String>>) {
-        rpc.respond(request.id, buildUserInputResponse(answers))
-        _state.update { it.removePendingRequest(request.id) }
+        _state.respondAndResolve(request.id) {
+            rpc.respond(request.id, buildUserInputResponse(answers))
+        }
     }
 
     suspend fun cancelMcpRequest(request: PendingRequest) {
-        rpc.respond(request.id, buildMcpCancelResponse())
-        _state.update { it.removePendingRequest(request.id) }
+        _state.respondAndResolve(request.id) {
+            rpc.respond(request.id, buildMcpCancelResponse())
+        }
     }
 
     suspend fun rejectUnsupportedRequest(request: PendingRequest) {
-        rpc.respondError(request.id, "Unsupported by Codex Web Android: ${request.method}")
+        _state.respondAndResolve(request.id) {
+            rpc.respondError(request.id, "Unsupported by Codex Web Android: ${request.method}")
+        }
         _state.update {
-            it.removePendingRequest(request.id)
-                .copy(diagnostics = it.appendDiagnostic("app-server.serverRequest", "Rejected ${request.method}"))
+            it.copy(diagnostics = it.appendDiagnostic("app-server.serverRequest", "Rejected ${request.method}"))
         }
     }
 
@@ -771,6 +774,15 @@ class AppServerRepository(
         put("sortDirection", "desc")
         put("archived", false)
     }
+}
+
+internal fun <T> MutableStateFlow<AppServerSnapshot>.respondAndResolve(
+    requestId: JsonElement,
+    respond: () -> T,
+): T = try {
+    respond()
+} finally {
+    update { it.removePendingRequest(requestId) }
 }
 
 internal fun JsonObjectBuilder.putCollaborationMode(mode: String, model: String) {

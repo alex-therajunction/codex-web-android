@@ -185,6 +185,12 @@ fun MainScreen(
     val activeTurnId = snapshot.selectedActiveTurnId
     val selectedPendingRequests = snapshot.selectedPendingRequests
     val firstPending = selectedPendingRequests.firstOrNull()
+    LaunchedEffect(userInputRequest?.id, selectedPendingRequests) {
+        val requestId = userInputRequest?.id ?: return@LaunchedEffect
+        if (selectedPendingRequests.none { it.id == requestId }) {
+            userInputRequest = null
+        }
+    }
     val isNewChat = snapshot.selectedThreadId == null
     val currentProject = normalizeProjectPath(
         snapshot.selectedThread?.cwd
