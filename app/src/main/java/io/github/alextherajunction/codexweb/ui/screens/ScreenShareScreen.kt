@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
@@ -118,6 +119,14 @@ fun ScreenShareScreen(
         }
     }
 
+    fun resetZoom() {
+        val view = webView ?: return
+        view.evaluateJavascript(
+            "window.codexScreenResetZoom && window.codexScreenResetZoom();",
+            null,
+        )
+    }
+
     fun disconnectAndClose() {
         runCatching {
             webView?.evaluateJavascript(
@@ -193,6 +202,12 @@ fun ScreenShareScreen(
                         enabled = state.status == ScreenShareStatus.CONNECTED,
                     ) {
                         Icon(Icons.Rounded.Keyboard, contentDescription = "Show keyboard")
+                    }
+                    IconButton(
+                        onClick = ::resetZoom,
+                        enabled = state.status == ScreenShareStatus.CONNECTED,
+                    ) {
+                        Icon(Icons.Rounded.FitScreen, contentDescription = "Reset zoom")
                     }
                     IconButton(
                         onClick = {

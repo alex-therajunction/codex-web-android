@@ -15,7 +15,7 @@ The app does not embed the main Codex Web application UI. It uses a WebView for 
 - Folder-based projects derived from thread `cwd`: the drawer groups conversations by server project, with an empty current project shown until its first conversation exists.
 - Project-aware new chat: choose a recent project or browse the server directory tree through `fs/readDirectory`; the selected path is persisted and sent as `cwd` to `thread/start` and `turn/start`.
 - Standalone interactive PTY terminal from **More → Terminal**, backed by the same `process/spawn` session as the Codex Web sidebar terminal, with streamed ANSI output, live PTY resize, soft-keyboard input, restart, and close cleanup.
-- Full-screen host desktop sharing from **More → Screen share**, using the deployment's `/workspace/screen` noVNC client with pointer control, on-screen and hardware-keyboard input, live resolution reporting, exclusive-session detection, explicit takeover, reconnect, and close cleanup.
+- Full-screen host desktop sharing from **More → Screen share**, using the deployment's `/workspace/screen` noVNC client with pointer control, on-screen and hardware-keyboard input, local pinch-to-zoom and panning, live resolution reporting, exclusive-session detection, explicit takeover, reconnect, and close cleanup.
 - Streaming assistant text from `item/agentMessage/delta`.
 - Failed Turn errors render immediately after that Turn rather than at the end of the conversation.
 - Native command, file-change, reasoning, plan, tool, and unknown-item rendering.

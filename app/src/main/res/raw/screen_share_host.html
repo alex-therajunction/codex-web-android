@@ -21,6 +21,8 @@
       height: 100%;
       border: 0;
       background: #171717;
+      transform-origin: 0 0;
+      will-change: transform;
     }
     #keyboard {
       position: fixed;
@@ -48,8 +50,16 @@
       var frame = document.getElementById('screen');
       var keyboardInput = document.getElementById('keyboard');
       var socketProbeInstalled = false;
+      var gestureZoomWindow = null;
       var lastSocketClose = null;
       var composing = false;
+      var zoom = 1;
+      var panX = 0;
+      var panY = 0;
+      var pinchState = null;
+      var twoDragState = null;
+
+      var MAX_ZOOM = 4;
 
       var specialKeys = {
         Enter: 'Enter',
@@ -101,6 +111,87 @@
         ProbedWebSocket.CLOSED = NativeWebSocket.CLOSED;
         frameWindow.WebSocket = ProbedWebSocket;
         socketProbeInstalled = true;
+      }
+
+      function clampPan() {
+        var maxX = Math.max(0, frame.clientWidth * (zoom - 1));
+        var maxY = Math.max(0, frame.clientHeight * (zoom - 1));
+        panX = Math.min(0, Math.max(-maxX, panX));
+        panY = Math.min(0, Math.max(-maxY, panY));
+      }
+
+      function applyZoom(animate) {
+        clampPan();
+        frame.style.transition = animate ? 'transform 140ms ease-out' : 'none';
+        frame.style.transform =
+          'translate3d(' + panX + 'px, ' + panY + 'px, 0) scale(' + zoom + ')';
+      }
+
+      function resetZoom(animate) {
+        pinchState = null;
+        twoDragState = null;
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+        applyZoom(animate === true);
+      }
+
+      function onGesture(event) {
+        var detail = event.detail;
+        if (!detail) return;
+
+        if (detail.type === 'pinch') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+
+          if (event.type === 'gesturestart') {
+            pinchState = {
+              zoom: zoom,
+              panX: panX,
+              panY: panY,
+              x: detail.clientX,
+              y: detail.clientY,
+              magnitude: Math.max(1, Math.hypot(detail.magnitudeX, detail.magnitudeY))
+            };
+            frame.style.transition = 'none';
+          } else if (event.type === 'gesturemove' && pinchState) {
+            var magnitude = Math.max(1, Math.hypot(detail.magnitudeX, detail.magnitudeY));
+            var nextZoom = Math.min(MAX_ZOOM, Math.max(1, pinchState.zoom * magnitude / pinchState.magnitude));
+            zoom = nextZoom;
+            panX = pinchState.panX + (pinchState.zoom - nextZoom) * pinchState.x;
+            panY = pinchState.panY + (pinchState.zoom - nextZoom) * pinchState.y;
+            applyZoom(false);
+          } else if (event.type === 'gestureend') {
+            pinchState = null;
+            if (zoom < 1.02) resetZoom(false);
+          }
+          return;
+        }
+
+        if (detail.type === 'twodrag' && zoom > 1) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+
+          if (event.type === 'gesturestart') {
+            twoDragState = { panX: panX, panY: panY };
+            frame.style.transition = 'none';
+          } else if (event.type === 'gesturemove' && twoDragState) {
+            panX = twoDragState.panX + detail.magnitudeX * zoom;
+            panY = twoDragState.panY + detail.magnitudeY * zoom;
+            applyZoom(false);
+          } else if (event.type === 'gestureend') {
+            twoDragState = null;
+          }
+        }
+      }
+
+      function installGestureZoom() {
+        var frameWindow = frame.contentWindow;
+        if (!frameWindow || gestureZoomWindow === frameWindow) return;
+        gestureZoomWindow = frameWindow;
+        frameWindow.addEventListener('gesturestart', onGesture, true);
+        frameWindow.addEventListener('gesturemove', onGesture, true);
+        frameWindow.addEventListener('gestureend', onGesture, true);
       }
 
       function screenCanvas() {
@@ -159,6 +250,7 @@
         ) {
           if (event.data.type === 'screen-frame/ready') {
             installSocketProbe();
+            installGestureZoom();
           }
           var message = event.data;
           if (
@@ -203,6 +295,14 @@
         keyboardInput.value = '';
         keyboardInput.blur();
       };
+
+      window.codexScreenResetZoom = function () {
+        resetZoom(true);
+      };
+
+      window.addEventListener('resize', function () {
+        applyZoom(false);
+      });
 
       keyboardInput.addEventListener('keydown', function (event) {
         if (composing || !specialKeys[event.key]) return;

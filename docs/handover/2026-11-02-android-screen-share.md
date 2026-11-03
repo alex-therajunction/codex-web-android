@@ -19,6 +19,7 @@ Web reference:
 - `ui/screens/ScreenShareScreen.kt` hosts a WebView, reports status and resolution, and renders the status overlays and actions.
 - `res/raw/screen_share_host.html` is a small same-origin wrapper with an iframe for `/workspace/screen`. It relays the existing screen-frame protocol over the Android WebMessage bridge.
 - The wrapper includes a hidden textarea used by the Android IME. Committed text is dispatched to noVNC's canvas as virtual-keyboard key events; Backspace, Enter, and navigation keys are sent as their corresponding RFB keysyms.
+- The wrapper captures noVNC's synthesized pinch and two-drag gesture events before noVNC converts them into remote mouse actions. A pinch scales the iframe locally, and a two-finger drag pans it while zoomed.
 - `MainScreen.kt` adds the menu entry; `CodexWebApp.kt` gives the screen-share surface precedence over the conversation and terminal.
 
 ## Same-origin wrapper
@@ -50,6 +51,13 @@ noVNC 1.7 binds its `_socketClose` handler in its constructor, so the web client
 - The WebView requests Android focus on creation and on touch so hardware key events reach noVNC. Pointer clicks are forwarded through noVNC's RFB pointer events.
 - The keyboard action focuses the wrapper textarea and shows the Android IME. Text is sent only after IME composition commits, avoiding duplicate characters from intermediate composition updates. Closing the viewer hides the IME before releasing the WebView.
 
+## Local zoom
+
+- Pinch zoom transforms the wrapper iframe from 1x to 4x, anchored at the gesture center. Panning is clamped so the iframe always covers the viewport.
+- While zoomed, a two-finger drag pans locally instead of sending remote scroll events. At 1x, two-finger drag remains noVNC's normal remote scroll gesture.
+- The **Reset zoom** toolbar action restores 1x and clears the pan offset. A pinch back to fit also resets the pan.
+- Gesture interception happens on the iframe window in the capture phase, before noVNC's canvas handler turns a pinch into Ctrl-wheel input.
+
 ## Security
 
 - No new Android permissions are required.
@@ -66,6 +74,7 @@ noVNC 1.7 binds its `_socketClose` handler in its constructor, so the web client
   - tapping the host window's button closed it through noVNC pointer input;
   - hardware-keyboard events reached `xev` as `a`, `h`, `e`, `l`, `l`, `o`;
   - the on-screen keyboard opened, and `soft`, Backspace, and Enter reached `xev` as the matching keysyms;
+  - injected two-finger pinch and drag gestures changed the local iframe transform without sending Ctrl-wheel events to the host, and **Reset zoom** restored 1x;
   - a second viewer received `4002 already-active` and the UI offered **Take over**;
   - takeover closed the previous viewer with `4001 taken-over` and connected Android;
   - the Android overlay showed **Taken over by another client** with the `4001` condition;
