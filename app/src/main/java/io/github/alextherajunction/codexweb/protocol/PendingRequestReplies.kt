@@ -40,10 +40,8 @@ internal class PendingRequestReplyLedger(
 
     fun lookup(request: PendingRequest): PendingRequestReply? = synchronized(lock) {
         val byId = repliesById[request.id]
-        if (byId != null) {
-            return@synchronized byId.reply.takeIf { byId.fingerprint == request.fingerprint() }
-        }
-        request.userInputItemKey()?.let(userInputRepliesByItem::get)
+        byId?.reply?.takeIf { byId.fingerprint == request.fingerprint() }
+            ?: request.userInputItemKey()?.let(userInputRepliesByItem::get)
     }
 
     fun clear() = synchronized(lock) {
@@ -62,8 +60,6 @@ internal fun PendingRequest.userInputItemKey(): String? {
         .orEmpty()
     return buildString {
         append(threadId.orEmpty())
-        append('\u0000')
-        append(turnId.orEmpty())
         append('\u0000')
         append(item)
         questionIds.forEach { questionId ->

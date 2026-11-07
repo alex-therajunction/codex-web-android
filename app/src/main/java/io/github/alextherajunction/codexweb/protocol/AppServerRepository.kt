@@ -41,6 +41,7 @@ class AppServerRepository(
     private val resumedThreads = mutableSetOf<String>()
     private val terminalListeners = ConcurrentHashMap<String, (TerminalProcessEvent) -> Unit>()
     private val pendingRequestReplies = PendingRequestReplyLedger()
+    private val pendingRequestLock = Any()
     private var session: DeploymentSession? = null
     private var effectivePermissionConfig = EffectivePermissionConfig()
 
@@ -58,26 +59,28 @@ class AppServerRepository(
         scope.launch {
             rpc.serverRequestFlow.collect { request ->
                 val pending = parsePendingRequest(request.id, request.method, request.params)
-                val replayedReply = pendingRequestReplies.lookup(pending)
-                if (replayedReply == null) {
-                    _state.update {
-                        it.addPendingRequest(pending).withLiveBridgeConnection()
+                synchronized(pendingRequestLock) {
+                    val replayedReply = pendingRequestReplies.lookup(pending)
+                    if (replayedReply == null) {
+                        _state.update {
+                            it.addPendingRequest(pending).withLiveBridgeConnection()
+                        }
+                        return@collect
                     }
-                    return@collect
-                }
-                val replayed = runCatching { replayedReply.send(rpc, pending.id) }.isSuccess
-                _state.update { current ->
-                    if (replayed) {
-                        current.removePendingRequest(pending.id)
-                            .withLiveBridgeConnection()
-                            .copy(
-                                diagnostics = current.appendDiagnostic(
-                                    "app-server.serverRequest",
-                                    "Re-answered replayed ${pending.method}",
-                                ),
-                            )
-                    } else {
-                        current.addPendingRequest(pending).withLiveBridgeConnection()
+                    val replayed = runCatching { replayedReply.send(rpc, pending.id) }.isSuccess
+                    _state.update { current ->
+                        if (replayed) {
+                            current.removePendingRequest(pending)
+                                .withLiveBridgeConnection()
+                                .copy(
+                                    diagnostics = current.appendDiagnostic(
+                                        "app-server.serverRequest",
+                                        "Re-answered replayed ${pending.method}",
+                                    ),
+                                )
+                        } else {
+                            current.addPendingRequest(pending).withLiveBridgeConnection()
+                        }
                     }
                 }
             }
@@ -650,30 +653,32 @@ class AppServerRepository(
         val reply = buildApprovalResponse(request, decision)
             ?.let(PendingRequestReply::Result)
             ?: PendingRequestReply.Failure("Unsupported approval request: ${request.method}")
-        pendingRequestReplies.record(request, reply)
-        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
+        rememberAndRespond(request, reply)
     }
 
     suspend fun answerUserInput(request: PendingRequest, answers: Map<String, List<String>>) {
         val reply = PendingRequestReply.Result(buildUserInputResponse(answers))
-        pendingRequestReplies.record(request, reply)
-        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
+        rememberAndRespond(request, reply)
     }
 
     suspend fun cancelMcpRequest(request: PendingRequest) {
         val reply = PendingRequestReply.Result(buildMcpCancelResponse())
-        pendingRequestReplies.record(request, reply)
-        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
+        rememberAndRespond(request, reply)
     }
 
     suspend fun rejectUnsupportedRequest(request: PendingRequest) {
         val reply = PendingRequestReply.Failure("Unsupported by Codex Web Android: ${request.method}")
-        pendingRequestReplies.record(request, reply)
-        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
+        rememberAndRespond(request, reply)
         _state.update {
             it.copy(diagnostics = it.appendDiagnostic("app-server.serverRequest", "Rejected ${request.method}"))
         }
     }
+
+    private fun rememberAndRespond(request: PendingRequest, reply: PendingRequestReply) =
+        synchronized(pendingRequestLock) {
+            pendingRequestReplies.record(request, reply)
+            _state.respondAndResolve(request) { reply.send(rpc, request.id) }
+        }
 
     private suspend fun readEffectiveConfig(): EffectiveConfigRead {
         val parameterVariants = listOf(
@@ -813,12 +818,12 @@ class AppServerRepository(
 }
 
 internal fun <T> MutableStateFlow<AppServerSnapshot>.respondAndResolve(
-    requestId: JsonElement,
+    request: PendingRequest,
     respond: () -> T,
 ): T = try {
     respond()
 } finally {
-    update { it.removePendingRequest(requestId) }
+    update { it.removePendingRequest(request) }
 }
 
 internal fun JsonObjectBuilder.putCollaborationMode(mode: String, model: String) {

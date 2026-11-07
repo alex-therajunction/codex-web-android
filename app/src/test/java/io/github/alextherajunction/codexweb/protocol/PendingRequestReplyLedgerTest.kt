@@ -53,6 +53,25 @@ class PendingRequestReplyLedgerTest {
     }
 
     @Test
+    fun `reissued user input in a later turn resolves for the same item`() {
+        val ledger = PendingRequestReplyLedger()
+        val reply = PendingRequestReply.Result(buildUserInputResponse(mapOf("choice" to listOf("Yes"))))
+        ledger.record(userInputRequest("bridge-server-request:1", "item-1", "turn-1"), reply)
+
+        assertEquals(reply, ledger.lookup(userInputRequest("bridge-server-request:2", "item-1", "turn-2")))
+    }
+
+    @Test
+    fun `changed params do not hide the item match for a reused request id`() {
+        val ledger = PendingRequestReplyLedger()
+        val reply = PendingRequestReply.Result(buildUserInputResponse(mapOf("choice" to listOf("Yes"))))
+        ledger.record(userInputRequest("bridge-server-request:1", "item-1", "turn-1"), reply)
+
+        val replayed = userInputRequest("bridge-server-request:1", "item-1", "turn-2")
+        assertEquals(reply, ledger.lookup(replayed))
+    }
+
+    @Test
     fun `approval with the same item id is not auto answered from a user input reply`() {
         val ledger = PendingRequestReplyLedger()
         ledger.record(
@@ -63,11 +82,15 @@ class PendingRequestReplyLedgerTest {
         assertNull(ledger.lookup(approvalRequest("bridge-server-request:2", "item-1")))
     }
 
-    private fun userInputRequest(id: String, itemId: String): PendingRequest = parsePendingRequest(
+    private fun userInputRequest(
+        id: String,
+        itemId: String,
+        turnId: String = "turn-1",
+    ): PendingRequest = parsePendingRequest(
         JsonPrimitive(id),
         "item/tool/requestUserInput",
         json.parseToJsonElement(
-            """{"threadId":"thread-1","turnId":"turn-1","itemId":"$itemId","questions":[{"id":"choice","header":"Choice","question":"Pick one"}]}""",
+            """{"threadId":"thread-1","turnId":"$turnId","itemId":"$itemId","questions":[{"id":"choice","header":"Choice","question":"Pick one"}]}""",
         ).jsonObject,
     )
 

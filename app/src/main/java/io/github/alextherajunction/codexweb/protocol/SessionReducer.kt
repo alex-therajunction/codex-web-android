@@ -181,11 +181,26 @@ fun AppServerSnapshot.hydrateThread(thread: ThreadInfo): AppServerSnapshot {
     )
 }
 
-fun AppServerSnapshot.addPendingRequest(request: PendingRequest): AppServerSnapshot =
-    copy(pendingRequests = pendingRequests.filterNot { it.id == request.id } + request)
+fun AppServerSnapshot.addPendingRequest(request: PendingRequest): AppServerSnapshot {
+    val userInputKey = request.userInputItemKey()
+    return copy(
+        pendingRequests = pendingRequests.filterNot {
+            it.id == request.id || (userInputKey != null && it.userInputItemKey() == userInputKey)
+        } + request,
+    )
+}
 
 fun AppServerSnapshot.removePendingRequest(requestId: JsonElement): AppServerSnapshot =
     copy(pendingRequests = pendingRequests.filterNot { it.id == requestId })
+
+fun AppServerSnapshot.removePendingRequest(request: PendingRequest): AppServerSnapshot {
+    val userInputKey = request.userInputItemKey()
+    return copy(
+        pendingRequests = pendingRequests.filterNot {
+            it.id == request.id || (userInputKey != null && it.userInputItemKey() == userInputKey)
+        },
+    )
+}
 
 fun AppServerSnapshot.withError(message: String?): AppServerSnapshot =
     copy(lastError = message)
