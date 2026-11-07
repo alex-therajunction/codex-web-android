@@ -127,6 +127,31 @@ class PermissionsTest {
     }
 
     @Test
+    fun `full access default writes the complete permission mode`() {
+        val edits = defaultPermissionModeConfigEdits(PermissionProfile.FULL_ACCESS)
+
+        assertEquals(
+            listOf("default_permissions", "approvals_reviewer", "approval_policy", "sandbox_mode"),
+            edits.map { it.string("keyPath") },
+        )
+        assertEquals(":danger-full-access", edits[0].string("value"))
+        assertEquals("user", edits[1].string("value"))
+        assertEquals("never", edits[2].string("value"))
+        assertEquals("danger-full-access", edits[3].string("value"))
+        assertTrue(edits.all { it.string("mergeStrategy") == "replace" })
+    }
+
+    @Test
+    fun `workspace defaults write all keys and custom config writes none`() {
+        val auto = defaultPermissionModeConfigEdits(PermissionProfile.AUTO_APPROVAL)
+        assertEquals(":workspace", auto[0].string("value"))
+        assertEquals("auto_review", auto[1].string("value"))
+        assertEquals("on-request", auto[2].string("value"))
+        assertEquals("workspace-write", auto[3].string("value"))
+        assertTrue(defaultPermissionModeConfigEdits(PermissionProfile.CONFIG).isEmpty())
+    }
+
+    @Test
     fun `resumed thread settings are mapped back to a permission profile`() {
         assertEquals(
             PermissionProfile.FULL_ACCESS,

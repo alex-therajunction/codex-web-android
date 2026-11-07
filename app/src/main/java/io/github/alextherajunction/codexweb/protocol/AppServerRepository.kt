@@ -40,6 +40,7 @@ class AppServerRepository(
     private val sendMutex = Mutex()
     private val resumedThreads = mutableSetOf<String>()
     private val terminalListeners = ConcurrentHashMap<String, (TerminalProcessEvent) -> Unit>()
+    private val pendingRequestReplies = PendingRequestReplyLedger()
     private var session: DeploymentSession? = null
     private var effectivePermissionConfig = EffectivePermissionConfig()
 
@@ -57,8 +58,27 @@ class AppServerRepository(
         scope.launch {
             rpc.serverRequestFlow.collect { request ->
                 val pending = parsePendingRequest(request.id, request.method, request.params)
-                _state.update {
-                    it.addPendingRequest(pending).withLiveBridgeConnection()
+                val replayedReply = pendingRequestReplies.lookup(pending)
+                if (replayedReply == null) {
+                    _state.update {
+                        it.addPendingRequest(pending).withLiveBridgeConnection()
+                    }
+                    return@collect
+                }
+                val replayed = runCatching { replayedReply.send(rpc, pending.id) }.isSuccess
+                _state.update { current ->
+                    if (replayed) {
+                        current.removePendingRequest(pending.id)
+                            .withLiveBridgeConnection()
+                            .copy(
+                                diagnostics = current.appendDiagnostic(
+                                    "app-server.serverRequest",
+                                    "Re-answered replayed ${pending.method}",
+                                ),
+                            )
+                    } else {
+                        current.addPendingRequest(pending).withLiveBridgeConnection()
+                    }
                 }
             }
         }
@@ -209,6 +229,7 @@ class AppServerRepository(
     fun close() {
         resumedThreads.clear()
         terminalListeners.clear()
+        pendingRequestReplies.clear()
         rpc.close()
         _state.update { it.copy(connection = "disconnected") }
     }
@@ -600,6 +621,24 @@ class AppServerRepository(
         })
     }
 
+    suspend fun persistDefaultPermissionProfile(profile: PermissionProfile) {
+        val edits = defaultPermissionModeConfigEdits(profile)
+        if (edits.isEmpty()) return
+        rpc.request("config/batchWrite", buildJsonObject {
+            putJsonArray("edits") { edits.forEach(::add) }
+            put("reloadUserConfig", true)
+        })
+        val configRead = readEffectiveConfig()
+        effectivePermissionConfig = if (configRead.response == null) {
+            effectivePermissionConfig.copy(defaultProfile = profile)
+        } else {
+            parseEffectivePermissionConfig(configRead.response)
+        }
+        _state.update {
+            it.copy(defaultPermissionProfile = effectivePermissionConfig.defaultProfile)
+        }
+    }
+
     suspend fun interrupt(threadId: String, turnId: String) {
         rpc.request("turn/interrupt", buildJsonObject {
             put("threadId", threadId)
@@ -608,32 +647,29 @@ class AppServerRepository(
     }
 
     suspend fun respondToApproval(request: PendingRequest, decision: ApprovalDecision) {
-        val result = buildApprovalResponse(request, decision)
-        if (result == null) {
-            _state.respondAndResolve(request.id) {
-                rpc.respondError(request.id, "Unsupported approval request: ${request.method}")
-            }
-            return
-        }
-        _state.respondAndResolve(request.id) { rpc.respond(request.id, result) }
+        val reply = buildApprovalResponse(request, decision)
+            ?.let(PendingRequestReply::Result)
+            ?: PendingRequestReply.Failure("Unsupported approval request: ${request.method}")
+        pendingRequestReplies.record(request, reply)
+        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
     }
 
     suspend fun answerUserInput(request: PendingRequest, answers: Map<String, List<String>>) {
-        _state.respondAndResolve(request.id) {
-            rpc.respond(request.id, buildUserInputResponse(answers))
-        }
+        val reply = PendingRequestReply.Result(buildUserInputResponse(answers))
+        pendingRequestReplies.record(request, reply)
+        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
     }
 
     suspend fun cancelMcpRequest(request: PendingRequest) {
-        _state.respondAndResolve(request.id) {
-            rpc.respond(request.id, buildMcpCancelResponse())
-        }
+        val reply = PendingRequestReply.Result(buildMcpCancelResponse())
+        pendingRequestReplies.record(request, reply)
+        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
     }
 
     suspend fun rejectUnsupportedRequest(request: PendingRequest) {
-        _state.respondAndResolve(request.id) {
-            rpc.respondError(request.id, "Unsupported by Codex Web Android: ${request.method}")
-        }
+        val reply = PendingRequestReply.Failure("Unsupported by Codex Web Android: ${request.method}")
+        pendingRequestReplies.record(request, reply)
+        _state.respondAndResolve(request.id) { reply.send(rpc, request.id) }
         _state.update {
             it.copy(diagnostics = it.appendDiagnostic("app-server.serverRequest", "Rejected ${request.method}"))
         }

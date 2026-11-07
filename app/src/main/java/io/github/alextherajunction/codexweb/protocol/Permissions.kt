@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -66,6 +67,29 @@ internal fun permissionProfileFromRuntimeSettings(settings: JsonObject): Permiss
         approvalsReviewer = settings.string("approvalsReviewer"),
         sandbox = settings["sandboxPolicy"] ?: settings["sandbox"],
     )
+}
+
+internal fun defaultPermissionModeConfigEdits(profile: PermissionProfile): List<JsonObject> = when (profile) {
+    PermissionProfile.FULL_ACCESS -> listOf(
+        configEdit("default_permissions", ":danger-full-access"),
+        configEdit("approvals_reviewer", "user"),
+        configEdit("approval_policy", "never"),
+        configEdit("sandbox_mode", "danger-full-access"),
+    )
+    PermissionProfile.REQUEST_APPROVAL,
+    PermissionProfile.AUTO_APPROVAL -> listOf(
+        configEdit("default_permissions", ":workspace"),
+        configEdit("approvals_reviewer", if (profile == PermissionProfile.AUTO_APPROVAL) "auto_review" else "user"),
+        configEdit("approval_policy", "on-request"),
+        configEdit("sandbox_mode", "workspace-write"),
+    )
+    PermissionProfile.CONFIG -> emptyList()
+}
+
+private fun configEdit(keyPath: String, value: String): JsonObject = buildJsonObject {
+    put("keyPath", keyPath)
+    put("value", value)
+    put("mergeStrategy", "replace")
 }
 
 internal fun JsonObjectBuilder.putThreadPermissionOptions(profile: PermissionProfile) {

@@ -33,6 +33,7 @@
 - User input responds with `{ "answers": { "<question-id>": { "answers": ["..."] } } }`.
 - MCP elicitation currently responds with `{ "action": "cancel", "content": null, "_meta": null }`.
 - `serverRequest/resolved` removes pending prompts by request ID.
+- Submitted replies are recorded in-memory so a bridge replay (same request ID or the same user-input item) is re-acknowledged and kept out of the pending UI instead of prompting again.
 
 ## Important constraints
 

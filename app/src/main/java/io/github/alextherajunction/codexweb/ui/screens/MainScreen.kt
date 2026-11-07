@@ -53,6 +53,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -139,7 +140,7 @@ fun MainScreen(
     onLoadEarlierTurns: () -> Unit,
     onModelSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
-    onPermissionSelected: (PermissionProfile) -> Unit,
+    onPermissionSelected: (PermissionProfile, Boolean) -> Unit,
     onComposerChange: (String) -> Unit,
     onSend: () -> Unit,
     onOpenTerminal: () -> Unit,
@@ -612,10 +613,11 @@ private fun ReconnectBanner(
 @Composable
 private fun AccessControlChip(
     profile: PermissionProfile,
-    onSelected: (PermissionProfile) -> Unit,
+    onSelected: (PermissionProfile, Boolean) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var pendingFullAccess by remember { mutableStateOf(false) }
+    var rememberFullAccess by remember { mutableStateOf(false) }
     val selected = permissionChoice(profile)
 
     AssistChip(
@@ -693,7 +695,7 @@ private fun AccessControlChip(
                     ) {
                         pendingFullAccess = true
                     } else {
-                        onSelected(choice.profile)
+                        onSelected(choice.profile, false)
                     }
                 },
             )
@@ -702,20 +704,44 @@ private fun AccessControlChip(
 
     if (pendingFullAccess) {
         AlertDialog(
-            onDismissRequest = { pendingFullAccess = false },
+            onDismissRequest = {
+                pendingFullAccess = false
+                rememberFullAccess = false
+            },
             title = { Text("Enable Full Access?") },
             text = {
-                Text(
-                    "Codex will be able to run commands and change files without asking, " +
-                        "including outside this project and on the internet. Only use this " +
-                        "with a project and server you trust.",
-                )
+                Column {
+                    Text(
+                        "Codex will be able to run commands and change files without asking, " +
+                            "including outside this project and on the internet. Only use this " +
+                            "with a project and server you trust.",
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { rememberFullAccess = !rememberFullAccess },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = rememberFullAccess,
+                            onCheckedChange = { rememberFullAccess = it },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Use this mode for all future sessions",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
+                        val remember = rememberFullAccess
                         pendingFullAccess = false
-                        onSelected(PermissionProfile.FULL_ACCESS)
+                        rememberFullAccess = false
+                        onSelected(PermissionProfile.FULL_ACCESS, remember)
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = CodexDanger),
                 ) {
@@ -723,7 +749,12 @@ private fun AccessControlChip(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingFullAccess = false }) {
+                TextButton(
+                    onClick = {
+                        pendingFullAccess = false
+                        rememberFullAccess = false
+                    },
+                ) {
                     Text("Cancel")
                 }
             },

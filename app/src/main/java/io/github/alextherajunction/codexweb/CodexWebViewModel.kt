@@ -771,13 +771,14 @@ class CodexWebViewModel(application: Application) : AndroidViewModel(application
         repository.selectReasoningEffort(effort)
     }
 
-    fun updatePermissionProfile(profile: PermissionProfile) {
+    fun updatePermissionProfile(profile: PermissionProfile, rememberForFutureSessions: Boolean = false) {
         val repository = repository ?: return
         repository.selectPermissionProfile(profile)
-        val threadId = repository.state.value.selectedThreadId ?: return
+        val threadId = repository.state.value.selectedThreadId
         viewModelScope.launch {
             try {
-                repository.updateThreadPermissions(threadId, profile)
+                if (threadId != null) repository.updateThreadPermissions(threadId, profile)
+                if (rememberForFutureSessions) repository.persistDefaultPermissionProfile(profile)
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Could not update permissions") }
             }
